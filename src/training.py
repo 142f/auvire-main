@@ -128,6 +128,7 @@ def get_job_info():
 class Experiment:
 
     def __init__(self, cfg, folder=None, print_config=True, job_info=True):
+        self.job = {}
         if job_info:
             self.job = get_job_info()
             if print_config:
@@ -293,8 +294,7 @@ class Experiment:
         for epoch in range(self.epochs):
             metrics, duration = self.train_one_epoch(epoch)
             metrics_train_val.append(metrics)
-            if self.disable_tqdm:
-                print(f"[{datetime.datetime.now()}: Epoch {epoch+1}/{self.epochs} {str(duration)}]", metrics)
+            print(f"[{datetime.datetime.now()}: Epoch {epoch+1}/{self.epochs} {str(duration)}]", metrics)
             self.logger.update(
                 "results",
                 self.results + [{"job": self.job, "seed": self.seed, "training": metrics_train_val}],

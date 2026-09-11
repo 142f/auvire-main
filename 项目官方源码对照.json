@@ -1,0 +1,195 @@
+{
+  "date": "2026-09-08",
+  "local_commit": "06633d5",
+  "repository": "mever-team/auvire",
+  "ref": "main",
+  "note": "仅比较未被 .gitignore 忽略的本地文件；未读取 fairseq、数据、checkpoint。比较按 UTF-8 / LF 规范化后的 Git blob SHA-1 进行。",
+  "files": [
+    {
+      "path": "src/models.py",
+      "upstream_blob_sha": "663a9032a662ec9b1218f5c7453bc30814acd40b",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/models.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/training.py",
+      "upstream_blob_sha": "6a310b882d1d3b9ec389e86f4409660ddde489e2",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/training.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/datasets.py",
+      "upstream_blob_sha": "69aa22206ff0409f236f26e7257b560f3bde7e19",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/datasets.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/losses.py",
+      "upstream_blob_sha": "598fd437e06acaf259fd2771d6c0f51c8cf37d1f",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/losses.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/eval.py",
+      "upstream_blob_sha": "78463e50b8251bce54202491bcd1f42624a2d2f2",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/eval.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/itw.py",
+      "upstream_blob_sha": "481b170eb429a96c13ef27680c72c95ae0729c45",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/itw.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "external/inference.py",
+      "upstream_blob_sha": "e41f45538a4848a3483493f519cd510c8730b64e",
+      "url": "https://github.com/mever-team/auvire/blob/main/external/inference.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "requirements.txt",
+      "upstream_blob_sha": "3688952013c507d9416b0cdc33917bf868e07a69",
+      "url": "https://github.com/mever-team/auvire/blob/main/requirements.txt",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/loaders.py",
+      "upstream_blob_sha": "fe2ef211c479ec26b3d4e212874044d12d322879",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/loaders.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "scripts/train.py",
+      "upstream_blob_sha": "9fc543e838bceab1fc240df166a7b41e716568a2",
+      "url": "https://github.com/mever-team/auvire/blob/main/scripts/train.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/avhubert/hubert.py",
+      "upstream_blob_sha": "c426bd801088ca81d6e9d4b1f0667f3ff8bc85ce",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/avhubert/hubert.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/avhubert/hubert_dataset.py",
+      "upstream_blob_sha": "e611482067f9bfe410269fb86b2fb8af675eda68",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/avhubert/hubert_dataset.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "real-world-data/download.py",
+      "upstream_blob_sha": "ae72a8941e0e0e30acb748984bbd93969503db40",
+      "url": "https://github.com/mever-team/auvire/blob/main/real-world-data/download.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "scripts/ablation.py",
+      "upstream_blob_sha": "b74335ca46edc3935f58940b20e474ae8fdd0c82",
+      "url": "https://github.com/mever-team/auvire/blob/main/scripts/ablation.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "scripts/itw.py",
+      "upstream_blob_sha": "b34594227524f65b5cf1f496486070cceb0962d0",
+      "url": "https://github.com/mever-team/auvire/blob/main/scripts/itw.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "scripts/predict.py",
+      "upstream_blob_sha": "afa06c14a6da5f4ea33577bbec1321ca7087d5bf",
+      "url": "https://github.com/mever-team/auvire/blob/main/scripts/predict.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "scripts/results.py",
+      "upstream_blob_sha": "caa74b57456668dffc6076f2d7983bdd5303f2b2",
+      "url": "https://github.com/mever-team/auvire/blob/main/scripts/results.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "scripts/robustness.py",
+      "upstream_blob_sha": "6a5144dded4090d831cf2a559f6af81a06230396",
+      "url": "https://github.com/mever-team/auvire/blob/main/scripts/robustness.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "scripts/test.py",
+      "upstream_blob_sha": "1ab6c5c4bd7bbcfb4070b376335ac2d68b2fddb7",
+      "url": "https://github.com/mever-team/auvire/blob/main/scripts/test.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/config.py",
+      "upstream_blob_sha": "8199520ac94b372239afad34e7a9cdb642c19e78",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/config.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/logger.py",
+      "upstream_blob_sha": "40da0c5f64ef4c645ba7c876dcb7f709c46a7f85",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/logger.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/metrics.py",
+      "upstream_blob_sha": "b5eafc76231434d79090a923cc7ad8807f6c702a",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/metrics.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/post_process.py",
+      "upstream_blob_sha": "df06ac0be40b6fa39184202fa7072ae0548a5a62",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/post_process.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/robustness.py",
+      "upstream_blob_sha": "632e6e8f486c3d3fe15b0f448add30337baaed8b",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/robustness.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/seed.py",
+      "upstream_blob_sha": "a2cc6ea019fe5269fe1cc361886776f78dd66311",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/seed.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/speechbrain_utils.py",
+      "upstream_blob_sha": "f65254ef01276961dd6a6ae102008229474a07e8",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/speechbrain_utils.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/avhubert/decoder.py",
+      "upstream_blob_sha": "78de423aacbe718e36f91af848b8ebb32e017847",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/avhubert/decoder.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/avhubert/hubert_pretraining.py",
+      "upstream_blob_sha": "8f5df708cec284d21e5c26996ede361372d2603f",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/avhubert/hubert_pretraining.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/avhubert/resnet.py",
+      "upstream_blob_sha": "e584f2b28c2eaf02e8b79bd3aed0cd53266e9551",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/avhubert/resnet.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/avhubert/sequence_generator.py",
+      "upstream_blob_sha": "eb7ac35670e7a3771e51db9931251c082c241684",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/avhubert/sequence_generator.py",
+      "comparison": "identical after LF normalization"
+    },
+    {
+      "path": "src/avhubert/utils.py",
+      "upstream_blob_sha": "60d57fa006adbb9839e1c3501b3442917bb0df3e",
+      "url": "https://github.com/mever-team/auvire/blob/main/src/avhubert/utils.py",
+      "comparison": "identical after LF normalization"
+    }
+  ]
+}

@@ -5,7 +5,7 @@ from src.logger import keys_exists, setInDict
 DEFAULT_LAVDF = {
     "device": "cuda",
     "logging": True,
-    "disable_tqdm": True,
+    "disable_tqdm": False,
     "delete_ckpt": True,
     "seeds": [1234567891],
     "epochs": 100,
