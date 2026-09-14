@@ -30,7 +30,7 @@ DEFAULT_LAVDF = {
 DEFAULT_AVDEEPFAKE1M = {
     "device": "cuda",
     "logging": True,
-    "disable_tqdm": True,
+    "disable_tqdm": False,
     "delete_ckpt": False,
     "seeds": [0],
     "epochs": 100,

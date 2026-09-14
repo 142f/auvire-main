@@ -4,6 +4,7 @@ from src.post_process import soft_nms_torch_parallel
 import torch
 import numpy as np
 from sklearn.metrics import average_precision_score, roc_auc_score, accuracy_score
+from tqdm import tqdm
 
 
 def adjust_data(data, task, dataset, device):
@@ -38,7 +39,18 @@ def adjust_data(data, task, dataset, device):
 
 class Evaluation:
 
-    def __init__(self, model, loader, criterion, device, factor, generalization=False, task="tfl"):
+    def __init__(
+        self,
+        model,
+        loader,
+        criterion,
+        device,
+        factor,
+        generalization=False,
+        task="tfl",
+        show_progress=False,
+        phase="Validation",
+    ):
         self.model = model
         self.loader = loader
         self.max_length = loader.dataset.max_length
@@ -66,21 +78,36 @@ class Evaluation:
         self.factor = factor
         self.generalization = generalization
         self.task = task
+        self.show_progress = show_progress
+        self.phase = phase
 
     def get_predictions(self):
         self.model.eval()
         with torch.no_grad():
-            for data in self.loader:
+            progress = tqdm(
+                self.loader,
+                total=len(self.loader),
+                desc=self.phase,
+                unit="batch",
+                dynamic_ncols=True,
+                leave=False,
+                position=1,
+                disable=not self.show_progress,
+            )
+            for iteration, data in enumerate(progress):
                 data_adjusted = adjust_data(data, self.task, self.dataset, self.device)
                 p, z = self.model([data_adjusted["video_features"], data_adjusted["audio_features"]])
                 if self.task == "tfl":
                     self.loss += self.criterion(p, data_adjusted["labels"], z).item()
                     self.update_predictions(p, data_adjusted["fake_periods"])
+                    progress.set_postfix(loss=f"{self.loss / (iteration + 1):.4f}", refresh=False)
                 elif self.task == "dfd":
                     overall_target = [
                         max(x, y) for x, y in zip(data_adjusted["video_target"], data_adjusted["audio_target"])
                     ]
                     self.update_predictions(p, overall_target)
+
+            progress.close()
 
         self.loss /= len(self.loader)
 
@@ -109,6 +136,8 @@ class Evaluation:
 
     def compute_metrics(self):
         self.get_predictions()
+        if self.show_progress:
+            tqdm.write(f"{self.phase}: post-processing and computing metrics...")
         self.transform_predictions()
         proposals = soft_nms_torch_parallel(
             self.predictions, self.sigma, self.t1, self.t2, self.fps, self.metrics_device
