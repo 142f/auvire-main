@@ -139,6 +139,8 @@ class Experiment:
         self.device = cfg["device"]
         self.logging = cfg["logging"]
         self.disable_tqdm = cfg["disable_tqdm"]
+        stderr = __import__("sys").stderr
+        self.show_progress = not self.disable_tqdm and getattr(stderr, "isatty", lambda: False)()
         self.delete_ckpt = cfg["delete_ckpt"]
         self.seeds = cfg["seeds"]
         self.epochs = cfg["epochs"]
@@ -241,13 +243,70 @@ class Experiment:
         postfix = {**t, **postfix}
         return metrics, postfix
 
+    @staticmethod
+    def _clock(value):
+        """Format a timedelta without microseconds for stable console logs."""
+        return str(value).split(".", 1)[0]
+
+    def _write(self, message):
+        if self.show_progress:
+            tqdm.write(message)
+        else:
+            print(message, flush=True)
+
+    def _format_epoch_summary(self, metrics, duration, total_duration, best_epoch, wait):
+        lr = self.optimizer.param_groups[0]["lr"]
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        epoch = metrics["epoch"]
+        if not self.show_progress:
+            fields = [
+                f"epoch={epoch}/{self.epochs}",
+                f"duration={self._clock(duration)}",
+                f"elapsed={self._clock(total_duration)}",
+                f"loss={metrics['loss']:.4f}",
+                f"ap={metrics['ap']:.2f}",
+                f"vloss={metrics['vloss']:.4f}",
+            ]
+            fields.extend(
+                f"{key.replace('@', '').replace('.', '')}={value:.2f}"
+                for key, value in metrics.items()
+                if key.startswith(("vap@", "var@"))
+            )
+            fields.extend(
+                [f"best={best_epoch + 1}", f"wait={wait}/{self.patience}", f"lr={lr:.2e}"]
+            )
+            return [f"[{timestamp}] " + " ".join(fields)]
+
+        ap_values = "  ".join(
+            f"@{key.split('@', 1)[1]} {value:.2f}" for key, value in metrics.items() if key.startswith("vap@")
+        )
+        ar_values = "  ".join(
+            f"@{key.split('@', 1)[1]} {value:.2f}" for key, value in metrics.items() if key.startswith("var@")
+        )
+        remaining = max(self.patience - wait, 0)
+        return [
+            f"Epoch {epoch:03d}/{self.epochs} | {self._clock(duration)} | total {self._clock(total_duration)} "
+            f"| train loss {metrics['loss']:.4f}  AP {metrics['ap']:.2f} | val loss {metrics['vloss']:.4f}",
+            f"AP  {ap_values}",
+            f"AR  {ar_values}",
+            f"Best epoch {best_epoch + 1} | early-stop {wait}/{self.patience} "
+            f"| remaining {remaining} | lr {lr:.2e}",
+        ]
+
     def train_one_epoch(self, epoch):
         start_epoch = datetime.datetime.now()
         self.model.train()
         tot_loss, tot_metric = 0, 0
         metric_name = "ap"
-        with tqdm(unit="batch", total=len(self.loaders["train"]), dynamic_ncols=True, disable=self.disable_tqdm) as tepoch:
-            tepoch.set_description(f"Epoch {epoch+1}")
+        with tqdm(
+            unit="batch",
+            total=len(self.loaders["train"]),
+            desc=f"Train E{epoch + 1}",
+            dynamic_ncols=True,
+            leave=False,
+            position=1,
+            disable=not self.show_progress,
+        ) as tepoch:
             for iteration, data in enumerate(self.loaders["train"]):
                 tepoch.update(1)
                 data_adjusted = adjust_data(data, "tfl", self.dataset, self.device)
@@ -258,58 +317,95 @@ class Experiment:
                 loss_.backward()
                 self.optimizer.step()
                 tot_metric += self.compute_metric(data_adjusted["labels"], p)
-                tepoch.set_postfix({"loss": tot_loss / (iteration + 1), metric_name: 100.0 * tot_metric / (iteration + 1)})
+                tepoch.set_postfix(
+                    {
+                        "loss": f"{tot_loss / (iteration + 1):.4f}",
+                        metric_name: f"{100.0 * tot_metric / (iteration + 1):.2f}",
+                        "lr": f"{self.optimizer.param_groups[0]['lr']:.2e}",
+                    },
+                    refresh=False,
+                )
 
-            e = Evaluation(
-                model=self.model,
-                loader=self.loaders["val"],
-                criterion=self.criterion,
-                device=self.device,
-                factor=self.factor,
-            )
-            e.compute_metrics()
-            metrics, postfix = self.adjust_metrics(
-                loss=tot_loss / len(self.loaders["train"]),
-                metric_name=metric_name,
-                metric=tot_metric / len(self.loaders["train"]),
-                validation=e.metrics,
-            )
-            duration = datetime.datetime.now() - start_epoch
-            metrics["epoch"] = epoch + 1
-            metrics["duration"] = str(duration)
-            if self.scheduler_dict["obj"] is not None:
-                if self.scheduler_dict["name"] == "reduceonplateau":
-                    current_score = sum([metrics[x] for x in metrics if "vap" in x or "var" in x])
-                    self.scheduler_dict["obj"].step(current_score)
-                else:
-                    self.scheduler_dict["obj"].step()
-            tepoch.set_postfix(postfix)
-            tepoch.close()
-            return metrics, duration
+        e = Evaluation(
+            model=self.model,
+            loader=self.loaders["val"],
+            criterion=self.criterion,
+            device=self.device,
+            factor=self.factor,
+            show_progress=self.show_progress,
+            phase=f"Val E{epoch + 1}",
+        )
+        e.compute_metrics()
+        metrics, _ = self.adjust_metrics(
+            loss=tot_loss / len(self.loaders["train"]),
+            metric_name=metric_name,
+            metric=tot_metric / len(self.loaders["train"]),
+            validation=e.metrics,
+        )
+        duration = datetime.datetime.now() - start_epoch
+        metrics["epoch"] = epoch + 1
+        metrics["duration"] = str(duration)
+        if self.scheduler_dict["obj"] is not None:
+            if self.scheduler_dict["name"] == "reduceonplateau":
+                current_score = sum([metrics[x] for x in metrics if "vap" in x or "var" in x])
+                self.scheduler_dict["obj"].step(current_score)
+            else:
+                self.scheduler_dict["obj"].step()
+        return metrics, duration
 
     def training_process(self):
         best_score = 0
         best_epoch = 0
         metrics_train_val = []
-        for epoch in range(self.epochs):
-            metrics, duration = self.train_one_epoch(epoch)
-            metrics_train_val.append(metrics)
-            print(f"[{datetime.datetime.now()}: Epoch {epoch+1}/{self.epochs} {str(duration)}]", metrics)
-            self.logger.update(
-                "results",
-                self.results + [{"job": self.job, "seed": self.seed, "training": metrics_train_val}],
-            )
-            current_score = sum([metrics[x] for x in metrics if "vap" in x or "var" in x])
-            if current_score > best_score:
-                best_score = current_score
-                best_epoch = epoch
-                torch.save({"optimizer": self.optimizer.state_dict(), "model": self.model.state_dict()}, self.ckpt_path)
-                print(f"[{datetime.datetime.now()}] Saved checkpoint at {self.ckpt_path}")
-            elif epoch - best_epoch >= self.patience:
-                print(f"[{datetime.datetime.now()}] Early stopped training at epoch {epoch+1}")
-                break
+        process_start = datetime.datetime.now()
+        epoch_progress = tqdm(
+            total=self.epochs,
+            desc="Training",
+            unit="epoch",
+            dynamic_ncols=True,
+            position=0,
+            disable=not self.show_progress,
+        )
+        try:
+            for epoch in range(self.epochs):
+                metrics, duration = self.train_one_epoch(epoch)
+                metrics_train_val.append(metrics)
+                self.logger.update(
+                    "results",
+                    self.results + [{"job": self.job, "seed": self.seed, "training": metrics_train_val}],
+                )
+                current_score = sum([metrics[x] for x in metrics if "vap" in x or "var" in x])
+                improved = current_score > best_score
+                if improved:
+                    best_score = current_score
+                    best_epoch = epoch
+                    torch.save({"optimizer": self.optimizer.state_dict(), "model": self.model.state_dict()}, self.ckpt_path)
 
-        checkpoint = torch.load(self.ckpt_path)
+                wait = epoch - best_epoch
+                total_duration = datetime.datetime.now() - process_start
+                for line in self._format_epoch_summary(metrics, duration, total_duration, best_epoch, wait):
+                    self._write(line)
+                if improved:
+                    self._write(f"Saved best checkpoint: epoch={epoch + 1} path={self.ckpt_path}")
+
+                epoch_progress.update(1)
+                epoch_progress.set_postfix(
+                    best=best_epoch + 1,
+                    wait=f"{wait}/{self.patience}",
+                    lr=f"{self.optimizer.param_groups[0]['lr']:.2e}",
+                    refresh=False,
+                )
+                if wait >= self.patience:
+                    self._write(
+                        f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] early_stop "
+                        f"epoch={epoch + 1} best_epoch={best_epoch + 1} patience={self.patience}"
+                    )
+                    break
+        finally:
+            epoch_progress.close()
+
+        self._write(f"Loading best checkpoint from epoch {best_epoch + 1}; starting test...")
+        checkpoint = torch.load(self.ckpt_path, weights_only=False)
         self.model.load_state_dict(checkpoint["model"])
         e = Evaluation(
             model=self.model,
@@ -317,6 +413,8 @@ class Experiment:
             criterion=self.criterion,
             device=self.device,
             factor=self.factor,
+            show_progress=self.show_progress,
+            phase="Test",
         )
         e.compute_metrics()
         l = {"tloss": e.metrics["loss"]}
