@@ -167,6 +167,7 @@ class Experiment:
         self.gamma = cfg["criterion"]["params"]["gamma"]
         self.lr = cfg["optimization"]["lr"]
         self.scheduler_name = cfg["optimization"]["scheduler"]["name"]
+        self.scheduler_params = dict(cfg["optimization"]["scheduler"].get("params") or {})
         self.optimizer_name = cfg["optimization"]["optimizer"]["name"]
         self.factor = [1] * self.encoder["nlayers"]["retain"] + [2 ** (i + 1) for i in range(self.encoder["nlayers"]["downsample"])]
         if folder is not None:
@@ -204,14 +205,30 @@ class Experiment:
         )
 
     def get_scheduler(self, name, optimizer):
+        params = dict(self.scheduler_params)
         if name == "none":
+            if params:
+                raise ValueError("scheduler params must be empty when scheduler name is 'none'")
             return None
         elif name == "reduceonplateau":
-            return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, "max", patience=self.patience - 3)
+            patience = params.get("patience", 10)
+            factor = params.get("factor", 0.1)
+            min_lr = params.get("min_lr", 0)
+            if not isinstance(patience, int) or isinstance(patience, bool) or patience < 0:
+                raise ValueError("scheduler.params.patience must be a non-negative integer")
+            if not isinstance(factor, (int, float)) or isinstance(factor, bool) or not 0 < factor < 1:
+                raise ValueError("scheduler.params.factor must be a number between 0 and 1")
+            min_lrs = min_lr if isinstance(min_lr, (list, tuple)) else [min_lr]
+            if any(not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0 for value in min_lrs):
+                raise ValueError("scheduler.params.min_lr must contain only non-negative numbers")
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode="max", **params)
         elif name == "step":
-            return torch.optim.lr_scheduler.StepLR(optimizer, self.epochs // 5)
+            params.setdefault("step_size", max(self.epochs // 5, 1))
+            return torch.optim.lr_scheduler.StepLR(optimizer, **params)
         elif name == "cosineanealing":
-            return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, self.epochs)
+            params.setdefault("T_max", self.epochs)
+            return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, **params)
+        raise ValueError(f"scheduler {name} not supported")
 
     def get_optimizer(self, name):
         if name == "adam":
