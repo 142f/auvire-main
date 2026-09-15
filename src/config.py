@@ -24,7 +24,11 @@ DEFAULT_LAVDF = {
         "dropout": {"main": 0.1, "head": 0.5},
     },
     "criterion": {"composition": ["focal", "diou", "rec"], "params": {"alpha": 0.98, "gamma": 2}},
-    "optimization": {"lr": 0.001, "scheduler": {"name": "reduceonplateau", "params": {}}, "optimizer": {"name": "adam", "params": {}}},
+    "optimization": {
+        "lr": 0.001,
+        "scheduler": {"name": "reduceonplateau", "params": {"patience": 4, "factor": 0.1, "min_lr": 1e-6}},
+        "optimizer": {"name": "adam", "params": {}},
+    },
 }
 
 DEFAULT_AVDEEPFAKE1M = {
@@ -49,7 +53,11 @@ DEFAULT_AVDEEPFAKE1M = {
         "dropout": {"main": 0.1, "head": 0.5},
     },
     "criterion": {"composition": ["focal", "diou", "rec"], "params": {"alpha": 0.98, "gamma": 2}},
-    "optimization": {"lr": 0.001, "scheduler": {"name": "reduceonplateau", "params": {}}, "optimizer": {"name": "adam", "params": {}}},
+    "optimization": {
+        "lr": 0.001,
+        "scheduler": {"name": "reduceonplateau", "params": {"patience": 4, "factor": 0.1, "min_lr": 1e-6}},
+        "optimizer": {"name": "adam", "params": {}},
+    },
 }
 
 

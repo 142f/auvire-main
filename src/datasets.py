@@ -5,6 +5,19 @@ import numpy as np
 import json
 
 
+def _path_sort_key(path):
+    """Return a platform-independent key for persisted relative data paths."""
+    return str(path).replace("\\", "/").casefold()
+
+
+def _iter_files_stably(directory):
+    """Yield directory entries in a deterministic order on every filesystem."""
+    for root, dirs, files in os.walk(directory, topdown=True):
+        dirs.sort(key=str.casefold)
+        for name in sorted(files, key=str.casefold):
+            yield root, name
+
+
 class LAVDF(Dataset):
 
     def __init__(self, backbone, split, max_length, showsize=True):
@@ -16,17 +29,18 @@ class LAVDF(Dataset):
         if os.path.exists(f"utils/lavdf_{split}.json"):
             with open(f"utils/lavdf_{split}.json", "r") as hundle:
                 self.videos = json.load(hundle)
+            self.videos.sort(key=lambda video: _path_sort_key(video[0]))
         else:
             directory = f"data/LAV-DF_emb/{split}"
             with open("data/LAV-DF_emb/metadata.min.json", "r") as f:
                 metadata = {x["file"]: (int(x["modify_video"]), int(x["modify_audio"]), x["fake_periods"]) for x in json.load(f)}
             self.videos = []
-            for root, dirs, files in os.walk(directory, topdown=False):
-                for name in files:
-                    if name == "features.npz":
-                        fn = "/".join(os.path.dirname(root).split("/")[-2:]) + ".mp4"
-                        video_target, audio_target, fake_periods = metadata[fn]
-                        self.videos.append((os.path.join(root, name), video_target, audio_target, fake_periods))
+            for root, name in _iter_files_stably(directory):
+                if name == "features.npz":
+                    fn = "/".join(os.path.dirname(root).replace("\\", "/").split("/")[-2:]) + ".mp4"
+                    video_target, audio_target, fake_periods = metadata[fn]
+                    self.videos.append((os.path.join(root, name), video_target, audio_target, fake_periods))
+            self.videos.sort(key=lambda video: _path_sort_key(video[0]))
             with open(f"utils/lavdf_{split}.json", "w") as hundle:
                 json.dump(self.videos, hundle, indent=2)
 
@@ -109,6 +123,7 @@ class AVDeepFake1M(Dataset):
     def read_json_file(self, filename):
         with open(filename, "r") as hundle:
             self.videos = json.load(hundle)
+        self.videos.sort(key=lambda video: _path_sort_key(video[0]))
 
     def write_json_file(self, filename, variable):
         with open(filename, "w") as hundle:
@@ -118,14 +133,14 @@ class AVDeepFake1M(Dataset):
         directory = f"data/AV-Deepfake1M_emb/{split}"
         metadata = self.get_metadata(split)
         self.videos = []
-        for root, dirs, files in os.walk(directory, topdown=False):
-            for name in files:
-                if name == "features.npz":
-                    fn = "/".join(os.path.dirname(root).split("/")[-4:]) + ".mp4"
-                    targets = metadata[fn]
-                    self.videos.append((os.path.join(root, name), targets[0], targets[1], targets[2], targets[3], targets[4]))
-            if (split == "train") and (partition == "partial") and (len(self.videos) == self.num_partial_samples):
-                break
+        for root, name in _iter_files_stably(directory):
+            if name == "features.npz":
+                fn = "/".join(os.path.dirname(root).replace("\\", "/").split("/")[-4:]) + ".mp4"
+                targets = metadata[fn]
+                self.videos.append((os.path.join(root, name), targets[0], targets[1], targets[2], targets[3], targets[4]))
+                if (split == "train") and (partition == "partial") and (len(self.videos) >= self.num_partial_samples):
+                    break
+        self.videos.sort(key=lambda video: _path_sort_key(video[0]))
         return self.videos
 
     def get_metadata(self, split):
