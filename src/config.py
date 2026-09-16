@@ -2,6 +2,16 @@ import copy
 
 from src.logger import keys_exists, setInDict
 
+
+DEFAULT_PERFORMANCE = {
+    "progress_interval_batches": 50,
+    "training_metric_interval_batches": 50,
+    "result_flush_interval_epochs": 5,
+    "persistent_workers": True,
+    "prefetch_factor": 4,
+    "non_blocking_transfer": True,
+}
+
 DEFAULT_LAVDF = {
     "device": "cuda",
     "logging": True,
@@ -11,7 +21,7 @@ DEFAULT_LAVDF = {
     "epochs": 100,
     "patience": 10,
     "dataset": {"name": "lavdf", "backbone": "avhubert", "params": {"max_length": 512, "partition": "whole"}},
-    "dataloader": {"batch_size": 64, "workers": 4},
+    "dataloader": {"batch_size": 64, "workers": 8},
     "model": {
         "type": {"reconstruction": "cnn", "encoder": "cnn"},
         "d_model": 128,
@@ -26,9 +36,10 @@ DEFAULT_LAVDF = {
     "criterion": {"composition": ["focal", "diou", "rec"], "params": {"alpha": 0.98, "gamma": 2}},
     "optimization": {
         "lr": 0.001,
-        "scheduler": {"name": "reduceonplateau", "params": {"patience": 4, "factor": 0.1, "min_lr": 1e-6}},
+        "scheduler": {"name": "reduceonplateau", "params": {"patience": 7, "factor": 0.1, "min_lr": 0}},
         "optimizer": {"name": "adam", "params": {}},
     },
+    "performance": copy.deepcopy(DEFAULT_PERFORMANCE),
 }
 
 DEFAULT_AVDEEPFAKE1M = {
@@ -40,7 +51,7 @@ DEFAULT_AVDEEPFAKE1M = {
     "epochs": 100,
     "patience": 10,
     "dataset": {"name": "avdeepfake1m", "backbone": "avhubert", "params": {"max_length": 512, "partition": "whole"}},
-    "dataloader": {"batch_size": 64, "workers": 4},
+    "dataloader": {"batch_size": 64, "workers": 8},
     "model": {
         "type": {"reconstruction": "cnn", "encoder": "cnn"},
         "d_model": 128,
@@ -55,9 +66,10 @@ DEFAULT_AVDEEPFAKE1M = {
     "criterion": {"composition": ["focal", "diou", "rec"], "params": {"alpha": 0.98, "gamma": 2}},
     "optimization": {
         "lr": 0.001,
-        "scheduler": {"name": "reduceonplateau", "params": {"patience": 4, "factor": 0.1, "min_lr": 1e-6}},
+        "scheduler": {"name": "reduceonplateau", "params": {"patience": 7, "factor": 0.1, "min_lr": 0}},
         "optimizer": {"name": "adam", "params": {}},
     },
+    "performance": copy.deepcopy(DEFAULT_PERFORMANCE),
 }
 
 

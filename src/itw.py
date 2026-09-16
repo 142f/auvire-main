@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np
 import json
 import warnings
+import threading
 from collections import deque
 from itertools import groupby
 import os
@@ -63,6 +64,8 @@ VALIDITY_REASONS = {
         False: "The segment is too small to obtain reliable results.",
     },
 }
+_AVHUBERT_FEATURE_EXTRACTORS = {}
+_AVHUBERT_FEATURE_EXTRACTORS_LOCK = threading.Lock()
 AUVIRE_CLARIFICATIONS = "AuViRe is a deepfake detection and localization method that analyzes the visual and audio content of the video in a combined way. More specifically, the method tries to find mismatches between what is read from the lips of a person talking and what is heard from their voice. For that reason, this method is only meaningful when there is a clearly visible person talking in the video and their voice is audible. Cases where this method should NOT be used include videos without visible faces or very small faces, videos with no audio, videos where there is speech but not corresponding to the one of the depicted person (e.g. in cases of interviews where only the interviewee is shown but the interviewer's voice is audible), etc. The method is also somewhat sensitive and occasionally flags small parts of authentic videos as deepfakes - in such cases the analyst should look at the prevalence of flagged fake parts in the video - if they are sparse and few, then it is likely that the flagged parts were false positives."
 
 
@@ -421,16 +424,32 @@ def preprocess_video(frames, lm):
     return video
 
 
+def _get_avhubert_feature_extractor(device):
+    cache_key = str(device)
+    if cache_key in _AVHUBERT_FEATURE_EXTRACTORS:
+        return _AVHUBERT_FEATURE_EXTRACTORS[cache_key]
+    with _AVHUBERT_FEATURE_EXTRACTORS_LOCK:
+        if cache_key not in _AVHUBERT_FEATURE_EXTRACTORS:
+            ckpt_path = "src/avhubert/base_lrs3_iter4.pt"
+            models, _, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([ckpt_path])
+            transform = Compose(
+                [
+                    Normalize(0.0, 255.0),
+                    CenterCrop((task.cfg.image_crop_size, task.cfg.image_crop_size)),
+                    Normalize(task.cfg.image_mean, task.cfg.image_std),
+                ]
+            )
+            model = models[0]
+            if hasattr(model, "decoder"):
+                model = model.encoder.w2v_model
+            model.to(device)
+            model.eval()
+            _AVHUBERT_FEATURE_EXTRACTORS[cache_key] = (model, transform)
+    return _AVHUBERT_FEATURE_EXTRACTORS[cache_key]
+
+
 def get_features(audio, video, device):
-    ckpt_path = "src/avhubert/base_lrs3_iter4.pt"
-    models, saved_cfg, task = fairseq.checkpoint_utils.load_model_ensemble_and_task([ckpt_path])
-    transform = Compose(
-        [
-            Normalize(0.0, 255.0),
-            CenterCrop((task.cfg.image_crop_size, task.cfg.image_crop_size)),
-            Normalize(task.cfg.image_mean, task.cfg.image_std),
-        ]
-    )
+    model, transform = _get_avhubert_feature_extractor(device)
     video = transform(video)
     video = torch.FloatTensor(video).unsqueeze(dim=0).unsqueeze(dim=0).to(device)
     audio = audio[None, :, :].transpose(1, 2).to(device)
@@ -439,13 +458,6 @@ def get_features(audio, video, device):
         video = video[:, :, :-residual]
     elif residual < 0:
         audio = audio[:, :, :residual]
-    model = models[0]
-    if hasattr(models[0], "decoder"):
-        model = models[0].encoder.w2v_model
-    else:
-        pass
-    model.to(device)
-    model.eval()
     with torch.no_grad():
         feature_audio, _ = model.extract_finetune(source={"video": None, "audio": audio}, padding_mask=None, output_layer=None)
         feature_audio = feature_audio.squeeze(dim=0)
@@ -463,7 +475,7 @@ def get_model(dataset, device):
         ckpt_path = "ckpt/lavdf_b_avhubert_t_cnn_cnn_h_8_d_128_l_r2d2_w_15_o_subtraction_rl_r2d3u3s2_rm_av_aa_vv_f_True_conv_lr-_c_focal_diou_rec.pth"
     with open(json_path, "r") as hundle:
         configuration = json.load(hundle)["config"]
-    experiment = Experiment(cfg=configuration, print_config=False)
+    experiment = Experiment(cfg=configuration, print_config=False, job_info=False)
     global FACTOR
     FACTOR = [1] * experiment.encoder["nlayers"]["retain"] + [2 ** (i + 1) for i in range(experiment.encoder["nlayers"]["downsample"])]
     model = experiment.get_model()

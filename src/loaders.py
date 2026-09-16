@@ -14,7 +14,9 @@ def seed_worker(worker_id):
 
 
 def collate_fn(batch):
-    batch = list(filter(lambda x: x is not None, batch))
+    batch = [item for item in batch if item is not None]
+    if not batch:
+        raise RuntimeError("The complete batch is invalid; inspect the dataset error for the source path.")
     batch_1 = [b[:3] for b in batch]
     batch_2 = [b[3] for b in batch]
     return torch.utils.data.dataloader.default_collate(batch_1), batch_2
@@ -29,24 +31,42 @@ def get_dataset(dataset, backbone, partition, split, max_length, without, showsi
         raise Exception(f"Dataset {dataset} is not supported.")
 
 
-def get_loaders(dataset, backbone, partition, max_length, batch_size, workers, without="none", splits=None, showsize=True):
-    g = torch.Generator()
-    g.manual_seed(0)
-
+def get_loaders(
+    dataset,
+    backbone,
+    partition,
+    max_length,
+    batch_size,
+    workers,
+    without="none",
+    splits=None,
+    showsize=True,
+    performance=None,
+):
     if splits is None:
         splits = ["train", "val", "test"]
 
+    performance = performance or {}
+    persistent_workers = bool(performance.get("persistent_workers", True)) and workers > 0
+    prefetch_factor = performance.get("prefetch_factor", 2)
     loaders = {}
+    split_seeds = {"train": 0, "val": 1, "test": 2}
     for split in splits:
-        loaders[split] = DataLoader(
-            get_dataset(dataset, backbone, partition, split, max_length, without, showsize),
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=workers,
-            worker_init_fn=seed_worker,
-            generator=g,
-            collate_fn=collate_fn,
-            pin_memory=True,
-            drop_last=False,
-        )
+        generator = torch.Generator()
+        generator.manual_seed(split_seeds.get(split, 0))
+        loader_options = {
+            "dataset": get_dataset(dataset, backbone, partition, split, max_length, without, showsize),
+            "batch_size": batch_size,
+            "shuffle": split == "train",
+            "num_workers": workers,
+            "worker_init_fn": seed_worker,
+            "generator": generator,
+            "collate_fn": collate_fn,
+            "pin_memory": True,
+            "drop_last": False,
+            "persistent_workers": persistent_workers,
+        }
+        if workers > 0:
+            loader_options["prefetch_factor"] = prefetch_factor
+        loaders[split] = DataLoader(**loader_options)
     return loaders
