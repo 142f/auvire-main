@@ -1,5 +1,6 @@
 from src.metrics import AP, AR
 from src.post_process import soft_nms_torch_parallel
+from src.perf_monitor import stage, batches
 
 import torch
 import numpy as np
@@ -57,6 +58,8 @@ class Evaluation:
         phase="Validation",
         progress_interval_batches=50,
         non_blocking_transfer=False,
+        perf_monitor=None,
+        regression_audit=None,
     ):
         self.model = model
         self.loader = loader
@@ -90,6 +93,8 @@ class Evaluation:
         self.progress_interval_batches = max(int(progress_interval_batches), 1)
         self.non_blocking_transfer = non_blocking_transfer
         self._prediction_batches = None
+        self.perf_monitor = perf_monitor
+        self.regression_audit = regression_audit
 
     def get_predictions(self):
         self.model.eval()
@@ -97,7 +102,7 @@ class Evaluation:
         loss_weight = 0
         with torch.no_grad():
             progress = tqdm(
-                self.loader,
+                batches(self.perf_monitor, self.loader, self.phase),
                 total=len(self.loader),
                 desc=self.phase,
                 unit="batch",
@@ -108,21 +113,25 @@ class Evaluation:
                 mininterval=1.0,
             )
             for iteration, data in enumerate(progress):
-                data_adjusted = adjust_data(
-                    data,
-                    self.task,
-                    self.dataset,
-                    self.device,
-                    non_blocking=self.non_blocking_transfer,
-                )
-                p, z = self.model([data_adjusted["video_features"], data_adjusted["audio_features"]])
+                with stage(self.perf_monitor, "h2d", gpu=True):
+                    data_adjusted = adjust_data(
+                        data,
+                        self.task,
+                        self.dataset,
+                        self.device,
+                        non_blocking=self.non_blocking_transfer,
+                    )
+                with stage(self.perf_monitor, "forward", gpu=True):
+                    p, z = self.model([data_adjusted["video_features"], data_adjusted["audio_features"]])
                 if self.task == "tfl":
                     batch_size = data_adjusted["labels"].shape[0]
-                    batch_loss = self.criterion(p, data_adjusted["labels"], z).detach()
+                    with stage(self.perf_monitor, "loss", gpu=True):
+                        batch_loss = self.criterion(p, data_adjusted["labels"], z).detach()
                     weighted_loss = batch_loss * batch_size
                     loss_total = weighted_loss if loss_total is None else loss_total + weighted_loss
                     loss_weight += batch_size
-                    self.update_predictions(p, data_adjusted["fake_periods"])
+                    with stage(self.perf_monitor, "d2h", gpu=True):
+                        self.update_predictions(p, data_adjusted["fake_periods"])
                     if self.show_progress and (iteration + 1) % self.progress_interval_batches == 0:
                         progress.set_postfix(
                             loss=f"{(loss_total / loss_weight).item():.4f}", refresh=False
@@ -131,12 +140,15 @@ class Evaluation:
                     overall_target = [
                         max(x, y) for x, y in zip(data_adjusted["video_target"], data_adjusted["audio_target"])
                     ]
-                    self.update_predictions(p, overall_target)
+                    with stage(self.perf_monitor, "d2h", gpu=True):
+                        self.update_predictions(p, overall_target)
 
             progress.close()
 
         self._finalize_predictions()
         self.loss = (loss_total / loss_weight).item() if loss_weight else 0.0
+        if self.regression_audit is not None:
+            self.regression_audit.evaluation_predictions(self)
 
     def compute_dfd_metrics(self, proposals):
         y_score = torch.sigmoid(proposals[:, :, 0]).max(dim=-1)[0].cpu().numpy()
@@ -165,16 +177,21 @@ class Evaluation:
         self.get_predictions()
         if self.show_progress:
             tqdm.write(f"{self.phase}: post-processing and computing metrics...")
-        self.transform_predictions()
-        proposals = soft_nms_torch_parallel(
-            self.predictions, self.sigma, self.t1, self.t2, self.fps, self.metrics_device
-        )
-        if self.task == "tfl":
-            self.compute_tfl_metrics(proposals)
-        elif self.task == "dfd":
-            self.compute_dfd_metrics(proposals)
-        else:
-            raise ValueError(f"Unknown task: {self.task}")
+        with stage(self.perf_monitor, "transform", always=True):
+            self.transform_predictions()
+        with stage(self.perf_monitor, "softnms", always=True):
+            proposals = soft_nms_torch_parallel(
+                self.predictions, self.sigma, self.t1, self.t2, self.fps, self.metrics_device
+            )
+        with stage(self.perf_monitor, "metrics", always=True):
+            if self.task == "tfl":
+                self.compute_tfl_metrics(proposals)
+            elif self.task == "dfd":
+                self.compute_dfd_metrics(proposals)
+            else:
+                raise ValueError(f"Unknown task: {self.task}")
+        if self.regression_audit is not None:
+            self.regression_audit.evaluation_metrics(self, proposals)
 
     def update_predictions(self, predictions, labels):
         self.ground_truth.extend(labels)

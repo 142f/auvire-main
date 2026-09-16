@@ -16,6 +16,7 @@ from src.eval import Evaluation, adjust_data
 from src.logger import Logger
 from src.losses import CombinedLoss
 from src.seed import seed_everything
+from src.perf_monitor import stage, batches
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -495,6 +496,8 @@ class Experiment:
 
     def train_one_epoch(self, epoch):
         start_epoch = datetime.datetime.now()
+        monitor = getattr(self, "perf_monitor", None)
+        audit = getattr(self, "regression_audit", None)
         self.model.train()
         tot_loss, tot_metric = 0, 0
         metric_samples = 0
@@ -509,22 +512,31 @@ class Experiment:
             disable=not self.show_progress,
             mininterval=1.0,
         ) as tepoch:
-            for iteration, data in enumerate(self.loaders["train"]):
+            for iteration, data in enumerate(batches(monitor, self.loaders["train"], f"Train E{epoch + 1}")):
                 tepoch.update(1)
-                data_adjusted = adjust_data(
-                    data,
-                    "tfl",
-                    self.dataset,
-                    self.device,
-                    non_blocking=self.non_blocking_transfer,
-                )
-                p, z = self.model([data_adjusted["video_features"], data_adjusted["audio_features"]])
+                with stage(monitor, "h2d", gpu=True):
+                    data_adjusted = adjust_data(
+                        data,
+                        "tfl",
+                        self.dataset,
+                        self.device,
+                        non_blocking=self.non_blocking_transfer,
+                    )
+                with stage(monitor, "forward", gpu=True):
+                    p, z = self.model([data_adjusted["video_features"], data_adjusted["audio_features"]])
                 self.optimizer.zero_grad()
-                loss_ = self.criterion(p, data_adjusted["labels"], z)
+                with stage(monitor, "loss", gpu=True):
+                    loss_ = self.criterion(p, data_adjusted["labels"], z)
                 detached_loss = loss_.detach()
                 tot_loss = detached_loss if iteration == 0 else tot_loss + detached_loss
-                loss_.backward()
-                self.optimizer.step()
+                with stage(monitor, "backward", gpu=True):
+                    loss_.backward()
+                if audit is not None:
+                    audit.before_step(self, p, loss_)
+                with stage(monitor, "optimizer", gpu=True):
+                    self.optimizer.step()
+                if audit is not None:
+                    audit.after_step(self)
                 should_sample_metric = (
                     (iteration + 1) % self.training_metric_interval_batches == 0
                     or iteration + 1 == len(self.loaders["train"])
@@ -550,6 +562,8 @@ class Experiment:
             factor=self.factor,
             show_progress=self.show_progress,
             phase=f"Val E{epoch + 1}",
+            perf_monitor=monitor,
+            regression_audit=audit,
             progress_interval_batches=self.progress_interval_batches,
             non_blocking_transfer=self.non_blocking_transfer,
         )
