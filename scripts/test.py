@@ -2,10 +2,10 @@ from src.training import Experiment
 from src.eval import Evaluation
 from src.loaders import get_loaders
 from src.logger import Logger
-from src.eval import Evaluation
 
 import os
 import json
+from pathlib import Path
 
 import torch
 
@@ -59,7 +59,7 @@ for task in tasks:
         with open(json_file, "r") as hundle:
             data = json.load(hundle)
 
-        filename = json_file.split(".")[0]
+        filename = Path(json_file).with_suffix("")
         configuration = data["config"]
 
         test_loaders = []
@@ -76,6 +76,7 @@ for task in tasks:
                 workers=workers,
                 splits=["test"],
                 showsize=False,
+                performance=configuration.get("performance"),
             )
             test_loaders.append((test_dataset, test_loader["test"]))
 
@@ -86,7 +87,7 @@ for task in tasks:
 
             for test_dataset, test_loader in test_loaders:
                 print(f"Evaluating on TestDataset: {test_dataset}...")
-                ckpt_path = f"{filename}.pth"
+                ckpt_path = filename.with_suffix(".pth")
                 checkpoint = torch.load(ckpt_path)
                 model.load_state_dict(checkpoint["model"])
                 e = Evaluation(
@@ -97,6 +98,8 @@ for task in tasks:
                     factor=experiment.factor,
                     generalization=True,
                     task=task,
+                    progress_interval_batches=experiment.progress_interval_batches,
+                    non_blocking_transfer=experiment.non_blocking_transfer,
                 )
                 e.compute_metrics()
                 if task == "dfd":

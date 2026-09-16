@@ -973,28 +973,7 @@ class Model(nn.Module):
         else:
             raise Exception(f"operation {self.operation} is not supported")
 
-    def forward(self, src):
-        # Inputs
-        video, audio = self.get_model_inputs(src)
-
-        # Reconstruction target/prediction pairs & corresponding dissimilarity
-        pairs, dissimilarity = self.get_reconstruction_pairs(audio, video)
-
-        # Encoder inputs
-        encoder_inputs = self.get_encoder_inputs(pairs)
-
-        # Processing
-        if self.model_type["encoder"] in ["transformer"]:
-            encoder_inputs = encoder_inputs.permute((0, 2, 1))
-        features = self.encoder_model(encoder_inputs)
-
-        # Outputs
-        logits = self.classification(features)
-        boundaries = self.regression(features)
-        outputs = [torch.cat((l, b), dim=1).permute((0, 2, 1)) for l, b in zip(logits, boundaries)]
-        return outputs, dissimilarity
-
-    def get_features(self, src):
+    def _forward_with_features(self, src):
         # Inputs
         video, audio = self.get_model_inputs(src)
 
@@ -1014,3 +993,10 @@ class Model(nn.Module):
         boundaries = self.regression(features)
         outputs = [torch.cat((l, b), dim=1).permute((0, 2, 1)) for l, b in zip(logits, boundaries)]
         return outputs, dissimilarity, features
+
+    def forward(self, src):
+        outputs, dissimilarity, _ = self._forward_with_features(src)
+        return outputs, dissimilarity
+
+    def get_features(self, src):
+        return self._forward_with_features(src)

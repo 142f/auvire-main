@@ -7,34 +7,39 @@ from sklearn.metrics import average_precision_score, roc_auc_score, accuracy_sco
 from tqdm import tqdm
 
 
-def adjust_data(data, task, dataset, device):
-    if task == "tfl" or dataset in ["lavdf", "avdeepfake1m"]:
+def adjust_data(data, task, dataset, device, non_blocking=False):
+    if task not in {"tfl", "dfd"}:
+        raise ValueError(f"Unknown task: {task}")
+
+    if dataset in {"lavdf", "avdeepfake1m"}:
         data, fake_periods = data
         video_features, audio_features, labels = data
-        video_features, audio_features, labels = (
-            video_features.to(device),
-            audio_features.to(device),
-            labels.float().to(device),
-        )
-        target = labels[:, :, 0].max(dim=-1)[0].cpu().numpy().tolist()
-        return {
+        video_features = video_features.to(device, non_blocking=non_blocking)
+        audio_features = audio_features.to(device, non_blocking=non_blocking)
+        adjusted = {
             "video_features": video_features,
             "audio_features": audio_features,
-            "labels": labels,
             "fake_periods": fake_periods,
-            "video_target": target,
-            "audio_target": target,
         }
-    else:
+        if task == "tfl":
+            adjusted["labels"] = labels.float().to(device, non_blocking=non_blocking)
+        else:
+            target = labels[:, :, 0].amax(dim=-1).tolist()
+            adjusted["video_target"] = target
+            adjusted["audio_target"] = target
+        return adjusted
+    if task == "dfd":
         data, audio_target = data
         video_features, audio_features, video_target = data
-        video_features, audio_features = (video_features.to(device), audio_features.to(device))
+        video_features = video_features.to(device, non_blocking=non_blocking)
+        audio_features = audio_features.to(device, non_blocking=non_blocking)
         return {
             "video_features": video_features,
             "audio_features": audio_features,
             "video_target": video_target,
             "audio_target": audio_target,
         }
+    raise ValueError(f"Dataset {dataset} does not provide temporal-localization labels")
 
 
 class Evaluation:
@@ -50,6 +55,8 @@ class Evaluation:
         task="tfl",
         show_progress=False,
         phase="Validation",
+        progress_interval_batches=50,
+        non_blocking_transfer=False,
     ):
         self.model = model
         self.loader = loader
@@ -80,9 +87,14 @@ class Evaluation:
         self.task = task
         self.show_progress = show_progress
         self.phase = phase
+        self.progress_interval_batches = max(int(progress_interval_batches), 1)
+        self.non_blocking_transfer = non_blocking_transfer
+        self._prediction_batches = None
 
     def get_predictions(self):
         self.model.eval()
+        loss_total = None
+        loss_weight = 0
         with torch.no_grad():
             progress = tqdm(
                 self.loader,
@@ -93,14 +105,28 @@ class Evaluation:
                 leave=False,
                 position=1,
                 disable=not self.show_progress,
+                mininterval=1.0,
             )
             for iteration, data in enumerate(progress):
-                data_adjusted = adjust_data(data, self.task, self.dataset, self.device)
+                data_adjusted = adjust_data(
+                    data,
+                    self.task,
+                    self.dataset,
+                    self.device,
+                    non_blocking=self.non_blocking_transfer,
+                )
                 p, z = self.model([data_adjusted["video_features"], data_adjusted["audio_features"]])
                 if self.task == "tfl":
-                    self.loss += self.criterion(p, data_adjusted["labels"], z).item()
+                    batch_size = data_adjusted["labels"].shape[0]
+                    batch_loss = self.criterion(p, data_adjusted["labels"], z).detach()
+                    weighted_loss = batch_loss * batch_size
+                    loss_total = weighted_loss if loss_total is None else loss_total + weighted_loss
+                    loss_weight += batch_size
                     self.update_predictions(p, data_adjusted["fake_periods"])
-                    progress.set_postfix(loss=f"{self.loss / (iteration + 1):.4f}", refresh=False)
+                    if self.show_progress and (iteration + 1) % self.progress_interval_batches == 0:
+                        progress.set_postfix(
+                            loss=f"{(loss_total / loss_weight).item():.4f}", refresh=False
+                        )
                 elif self.task == "dfd":
                     overall_target = [
                         max(x, y) for x, y in zip(data_adjusted["video_target"], data_adjusted["audio_target"])
@@ -109,7 +135,8 @@ class Evaluation:
 
             progress.close()
 
-        self.loss /= len(self.loader)
+        self._finalize_predictions()
+        self.loss = (loss_total / loss_weight).item() if loss_weight else 0.0
 
     def compute_dfd_metrics(self, proposals):
         y_score = torch.sigmoid(proposals[:, :, 0]).max(dim=-1)[0].cpu().numpy()
@@ -152,17 +179,22 @@ class Evaluation:
     def update_predictions(self, predictions, labels):
         self.ground_truth.extend(labels)
         if isinstance(predictions, list):
-            if self.predictions is None:
-                self.predictions = [p_.detach().cpu() for p_ in predictions]
-            else:
-                self.predictions = [
-                    torch.cat((self.predictions[i], p_.detach().cpu()), dim=0) for i, p_ in enumerate(predictions)
-                ]
+            if self._prediction_batches is None:
+                self._prediction_batches = [[] for _ in predictions]
+            for batches, prediction in zip(self._prediction_batches, predictions):
+                batches.append(prediction.detach().cpu())
         else:
-            if self.predictions is None:
-                self.predictions = predictions.detach().cpu()
-            else:
-                self.predictions = torch.cat((self.predictions, predictions.detach().cpu()), dim=0)
+            if self._prediction_batches is None:
+                self._prediction_batches = []
+            self._prediction_batches.append(predictions.detach().cpu())
+
+    def _finalize_predictions(self):
+        if self._prediction_batches is None:
+            raise RuntimeError("Evaluation loader produced no predictions")
+        if self._prediction_batches and isinstance(self._prediction_batches[0], list):
+            self.predictions = [torch.cat(batches, dim=0) for batches in self._prediction_batches]
+        else:
+            self.predictions = torch.cat(self._prediction_batches, dim=0)
 
     def transform_predictions(self):
         idx = torch.arange(0, self.max_length).to(self.metrics_device)

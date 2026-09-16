@@ -6,6 +6,9 @@ from tqdm import tqdm
 import os
 import datetime
 import json
+import re
+import shutil
+import unicodedata
 
 from src.loaders import get_loaders
 from src.models import Model
@@ -140,7 +143,10 @@ class Experiment:
         self.logging = cfg["logging"]
         self.disable_tqdm = cfg["disable_tqdm"]
         stderr = __import__("sys").stderr
-        self.show_progress = not self.disable_tqdm and getattr(stderr, "isatty", lambda: False)()
+        force_progress = os.environ.get("AUVIRE_FORCE_TQDM", "").lower() in {"1", "true", "yes"}
+        self.show_progress = not self.disable_tqdm and (
+            force_progress or getattr(stderr, "isatty", lambda: False)()
+        )
         self.delete_ckpt = cfg["delete_ckpt"]
         self.seeds = cfg["seeds"]
         self.epochs = cfg["epochs"]
@@ -169,6 +175,23 @@ class Experiment:
         self.scheduler_name = cfg["optimization"]["scheduler"]["name"]
         self.scheduler_params = dict(cfg["optimization"]["scheduler"].get("params") or {})
         self.optimizer_name = cfg["optimization"]["optimizer"]["name"]
+        performance_defaults = {
+            "progress_interval_batches": 50,
+            "training_metric_interval_batches": 50,
+            "result_flush_interval_epochs": 5,
+            "persistent_workers": True,
+            "prefetch_factor": 4,
+            "non_blocking_transfer": True,
+        }
+        self.performance = {**performance_defaults, **(cfg.get("performance") or {})}
+        self.progress_interval_batches = max(int(self.performance["progress_interval_batches"]), 1)
+        self.training_metric_interval_batches = max(
+            int(self.performance["training_metric_interval_batches"]), 1
+        )
+        self.result_flush_interval_epochs = max(
+            int(self.performance["result_flush_interval_epochs"]), 1
+        )
+        self.non_blocking_transfer = bool(self.performance["non_blocking_transfer"])
         self.factor = [1] * self.encoder["nlayers"]["retain"] + [2 ** (i + 1) for i in range(self.encoder["nlayers"]["downsample"])]
         if folder is not None:
             self.folder = folder
@@ -211,7 +234,7 @@ class Experiment:
                 raise ValueError("scheduler params must be empty when scheduler name is 'none'")
             return None
         elif name == "reduceonplateau":
-            patience = params.get("patience", 10)
+            patience = params.get("patience", 7)
             factor = params.get("factor", 0.1)
             min_lr = params.get("min_lr", 0)
             if not isinstance(patience, int) or isinstance(patience, bool) or patience < 0:
@@ -266,16 +289,93 @@ class Experiment:
         return str(value).split(".", 1)[0]
 
     def _write(self, message):
-        if self.show_progress:
-            tqdm.write(message)
-        else:
-            print(message, flush=True)
+        try:
+            if self.show_progress:
+                tqdm.write(message)
+            else:
+                print(message, flush=True)
+        except UnicodeEncodeError:
+            fallback = re.sub(r"\033\[[0-9;]*m", "", message).translate(
+                str.maketrans({
+                    "═": "=", "─": "-", "│": "|", "┃": "|", "█": "#", "░": ".",
+                    "↑": "^", "↓": "v", "→": "-", "—": "-", "🏆": "BEST", "✔": "OK", "⛔": "STOP",
+                })
+            )
+            if self.show_progress:
+                tqdm.write(fallback)
+            else:
+                print(fallback, flush=True)
 
-    def _format_epoch_summary(self, metrics, duration, total_duration, best_epoch, wait):
+    def _color(self, text, code):
+        if not self.show_progress:
+            return text
+        return f"\033[{code}m{text}\033[0m"
+
+    @staticmethod
+    def _display_width(text):
+        text = re.sub(r"\033\[[0-9;]*m", "", text)
+        return sum(
+            0 if unicodedata.combining(char) else 2 if unicodedata.east_asian_width(char) in {"W", "F"} or ord(char) >= 0x1F300 else 1
+            for char in text
+        )
+
+    def _summary_row(self, plain, colored, width):
+        padding = max(width - self._display_width(plain) - 2, 0)
+        return f"  {colored}{' ' * padding}"
+
+    def _trend(self, value, previous, precision, lower_is_better=False):
+        if previous is None:
+            return "—", self._color("—", "90")
+        current_rounded = round(value, precision)
+        previous_rounded = round(previous, precision)
+        if current_rounded == previous_rounded:
+            return "→", self._color("→", "33")
+        rising = current_rounded > previous_rounded
+        arrow = "↑" if rising else "↓"
+        improved = not rising if lower_is_better else rising
+        return arrow, self._color(arrow, "32" if improved else "31")
+
+    def _format_metric_rows(self, label, metrics, previous_metrics, width):
+        entries = []
+        prefix = f"{label:<4} │ "
+        for key, value in metrics.items():
+            if not key.startswith(f"v{label.lower()}@"):
+                continue
+            previous = previous_metrics.get(key) if previous_metrics else None
+            arrow, colored_arrow = self._trend(value, previous, 2)
+            threshold = key.split("@", 1)[1]
+            entries.append((f"@{threshold:<4} {value:6.2f} {arrow}", f"@{threshold:<4} {value:6.2f} {colored_arrow}"))
+
+        rows = []
+        plain_row, colored_row = prefix, prefix
+        for plain_entry, colored_entry in entries:
+            separator = "  │  " if plain_row != prefix else ""
+            if self._display_width(plain_row + separator + plain_entry) > width - 2 and plain_row != prefix:
+                rows.append(self._summary_row(plain_row, colored_row, width))
+                plain_row = " " * len(prefix) + plain_entry
+                colored_row = " " * len(prefix) + colored_entry
+            else:
+                plain_row += separator + plain_entry
+                colored_row += separator + colored_entry
+        if entries:
+            rows.append(self._summary_row(plain_row, colored_row, width))
+        return rows
+
+    def _format_epoch_summary(
+        self,
+        metrics,
+        duration,
+        total_duration,
+        best_epoch,
+        wait,
+        previous_metrics=None,
+        improved=False,
+        stopped=False,
+    ):
         lr = self.optimizer.param_groups[0]["lr"]
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         epoch = metrics["epoch"]
-        if not self.show_progress:
+        if self.disable_tqdm:
             fields = [
                 f"epoch={epoch}/{self.epochs}",
                 f"duration={self._clock(duration)}",
@@ -294,26 +394,110 @@ class Experiment:
             )
             return [f"[{timestamp}] " + " ".join(fields)]
 
-        ap_values = "  ".join(
-            f"@{key.split('@', 1)[1]} {value:.2f}" for key, value in metrics.items() if key.startswith("vap@")
+        width = max(82, min(shutil.get_terminal_size(fallback=(104, 24)).columns, 110))
+        ratio = min(max(epoch / max(self.epochs, 1), 0.0), 1.0)
+        bar_width = max(8, min(24, width - 72))
+        completed = round(ratio * bar_width)
+        progress_bar = "█" * completed + "░" * (bar_width - completed)
+        eta = total_duration / epoch * max(self.epochs - epoch, 0) if epoch else datetime.timedelta(0)
+
+        train_arrow, train_arrow_color = self._trend(
+            metrics["loss"], previous_metrics.get("loss") if previous_metrics else None, 4, lower_is_better=True
         )
-        ar_values = "  ".join(
-            f"@{key.split('@', 1)[1]} {value:.2f}" for key, value in metrics.items() if key.startswith("var@")
+        val_arrow, val_arrow_color = self._trend(
+            metrics["vloss"], previous_metrics.get("vloss") if previous_metrics else None, 4, lower_is_better=True
         )
-        remaining = max(self.patience - wait, 0)
-        return [
-            f"Epoch {epoch:03d}/{self.epochs} | {self._clock(duration)} | total {self._clock(total_duration)} "
-            f"| train loss {metrics['loss']:.4f}  AP {metrics['ap']:.2f} | val loss {metrics['vloss']:.4f}",
-            f"AP  {ap_values}",
-            f"AR  {ar_values}",
-            f"Best epoch {best_epoch + 1} | early-stop {wait}/{self.patience} "
-            f"| remaining {remaining} | lr {lr:.2e}",
-        ]
+        gap = abs(metrics["loss"] - metrics["vloss"])
+
+        border = "═" * width
+        divider = "─" * width
+        header_plain = (
+            f"Epoch {epoch:>{len(str(self.epochs))}}/{self.epochs} ┃ {progress_bar} {ratio:>6.1%} "
+            f"│ ETA {self._clock(eta):>8} │ LR {lr:.2e}"
+        )
+
+        # --- Loss + Best：同一行，使用 ┊ 明确区分“训练状态”和“最佳 checkpoint” ---
+        best_text = f"🏆 E{best_epoch + 1}"
+        loss_best_plain = (
+            f"Loss │ Train {metrics['loss']:.4f}{train_arrow} │ Val {metrics['vloss']:.4f}{val_arrow} "
+            f"│ Gap {gap:.4f}  ┊  Best │ {best_text}"
+        )
+        loss_best_colored = (
+            f"Loss │ Train {metrics['loss']:.4f}{train_arrow_color} │ Val {metrics['vloss']:.4f}{val_arrow_color} "
+            f"│ Gap {gap:.4f}  ┊  Best │ {self._color(best_text, '32' if improved else '36')}"
+        )
+
+        # --- AP + AR：优先压缩成真正的一行；终端过窄时才安全回退成两行 ---
+        def _compact_metric_entries(label):
+            plain_entries = []
+            colored_entries = []
+            prefix = f"v{label.lower()}@"
+            for key, value in metrics.items():
+                if not key.startswith(prefix):
+                    continue
+                previous = previous_metrics.get(key) if previous_metrics else None
+                arrow, colored_arrow = self._trend(value, previous, 2)
+                threshold = key.split("@", 1)[1]
+                # AP 阈值保持 0.50 / 0.75 / 0.95；AR 保持 100 / 50 / 20 / 10。
+                if label == "AP":
+                    threshold_text = f"{float(threshold):.2f}"
+                else:
+                    threshold_text = threshold
+                plain_entries.append(f"{threshold_text} {value:.2f}{arrow}")
+                colored_entries.append(f"{threshold_text} {value:.2f}{colored_arrow}")
+            return plain_entries, colored_entries
+
+        ap_plain_entries, ap_colored_entries = _compact_metric_entries("AP")
+        ar_plain_entries, ar_colored_entries = _compact_metric_entries("AR")
+
+        ap_plain = " · ".join(ap_plain_entries)
+        ap_colored = " · ".join(ap_colored_entries)
+        ar_plain = " · ".join(ar_plain_entries)
+        ar_colored = " · ".join(ar_colored_entries)
+
+        metric_plain = f"AP │ {ap_plain}  ┊  AR │ {ar_plain}"
+        metric_colored = f"AP │ {ap_colored}  ┊  AR │ {ar_colored}"
+
+        if self._display_width(metric_plain) <= width - 2:
+            metrics_rows = [self._summary_row(metric_plain, metric_colored, width)]
+        else:
+            # 极窄终端下避免物理换行破坏边框；正常 tmux/SSH 宽度下不会进入这里。
+            metrics_rows = [
+                self._summary_row(f"AP │ {ap_plain}", f"AP │ {ap_colored}", width),
+                self._summary_row(f"AR │ {ar_plain}", f"AR │ {ar_colored}", width),
+            ]
+
+        rows = []
+        # 仅第一个 epoch 输出开头双线，后续 epoch 沿用上一个的结尾双线作为开头
+        if epoch == 1:
+            rows.append(self._color(border, "36"))
+        rows.append(self._summary_row(header_plain, self._color(header_plain, "36"), width))
+        rows.append(divider)
+        rows.append(self._summary_row(loss_best_plain, loss_best_colored, width))
+        rows.append(divider)
+        rows.extend(metrics_rows)
+        rows.append(divider)
+
+        checkpoint = "Saved ✔ (best)" if improved else "checkpoint unchanged"
+        footer_plain = (
+            f"Time │ epoch {self._clock(duration)} │ elapsed {self._clock(total_duration)} "
+            f"│ wait {wait}/{self.patience} │ {checkpoint}"
+        )
+        footer_colored = footer_plain.replace(
+            checkpoint, self._color(checkpoint, "32" if improved else "90")
+        )
+        rows.append(self._summary_row(footer_plain, footer_colored, width))
+        if stopped:
+            stop_plain = f"⛔ EARLY STOP │ epoch {epoch} │ loading best checkpoint from epoch {best_epoch + 1}"
+            rows.append(self._summary_row(stop_plain, self._color(stop_plain, "1;31"), width))
+        rows.append(self._color(border, "36"))
+        return rows
 
     def train_one_epoch(self, epoch):
         start_epoch = datetime.datetime.now()
         self.model.train()
         tot_loss, tot_metric = 0, 0
+        metric_samples = 0
         metric_name = "ap"
         with tqdm(
             unit="batch",
@@ -323,25 +507,40 @@ class Experiment:
             leave=False,
             position=1,
             disable=not self.show_progress,
+            mininterval=1.0,
         ) as tepoch:
             for iteration, data in enumerate(self.loaders["train"]):
                 tepoch.update(1)
-                data_adjusted = adjust_data(data, "tfl", self.dataset, self.device)
+                data_adjusted = adjust_data(
+                    data,
+                    "tfl",
+                    self.dataset,
+                    self.device,
+                    non_blocking=self.non_blocking_transfer,
+                )
                 p, z = self.model([data_adjusted["video_features"], data_adjusted["audio_features"]])
                 self.optimizer.zero_grad()
                 loss_ = self.criterion(p, data_adjusted["labels"], z)
-                tot_loss += loss_.item()
+                detached_loss = loss_.detach()
+                tot_loss = detached_loss if iteration == 0 else tot_loss + detached_loss
                 loss_.backward()
                 self.optimizer.step()
-                tot_metric += self.compute_metric(data_adjusted["labels"], p)
-                tepoch.set_postfix(
-                    {
-                        "loss": f"{tot_loss / (iteration + 1):.4f}",
-                        metric_name: f"{100.0 * tot_metric / (iteration + 1):.2f}",
-                        "lr": f"{self.optimizer.param_groups[0]['lr']:.2e}",
-                    },
-                    refresh=False,
+                should_sample_metric = (
+                    (iteration + 1) % self.training_metric_interval_batches == 0
+                    or iteration + 1 == len(self.loaders["train"])
                 )
+                if should_sample_metric:
+                    tot_metric += self.compute_metric(data_adjusted["labels"], p)
+                    metric_samples += 1
+                if self.show_progress and (iteration + 1) % self.progress_interval_batches == 0:
+                    tepoch.set_postfix(
+                        {
+                            "loss": f"{(tot_loss / (iteration + 1)).item():.4f}",
+                            metric_name: f"{100.0 * tot_metric / max(metric_samples, 1):.2f}",
+                            "lr": f"{self.optimizer.param_groups[0]['lr']:.2e}",
+                        },
+                        refresh=False,
+                    )
 
         e = Evaluation(
             model=self.model,
@@ -351,14 +550,18 @@ class Experiment:
             factor=self.factor,
             show_progress=self.show_progress,
             phase=f"Val E{epoch + 1}",
+            progress_interval_batches=self.progress_interval_batches,
+            non_blocking_transfer=self.non_blocking_transfer,
         )
         e.compute_metrics()
+        epoch_loss = (tot_loss / len(self.loaders["train"])).item()
         metrics, _ = self.adjust_metrics(
-            loss=tot_loss / len(self.loaders["train"]),
+            loss=epoch_loss,
             metric_name=metric_name,
-            metric=tot_metric / len(self.loaders["train"]),
+            metric=tot_metric / max(metric_samples, 1),
             validation=e.metrics,
         )
+        metrics["training_ap_sampled_batches"] = metric_samples
         duration = datetime.datetime.now() - start_epoch
         metrics["epoch"] = epoch + 1
         metrics["duration"] = str(duration)
@@ -374,6 +577,7 @@ class Experiment:
         best_score = 0
         best_epoch = 0
         metrics_train_val = []
+        previous_metrics = None
         process_start = datetime.datetime.now()
         epoch_progress = tqdm(
             total=self.epochs,
@@ -382,15 +586,12 @@ class Experiment:
             dynamic_ncols=True,
             position=0,
             disable=not self.show_progress,
+            mininterval=1.0,
         )
         try:
             for epoch in range(self.epochs):
                 metrics, duration = self.train_one_epoch(epoch)
                 metrics_train_val.append(metrics)
-                self.logger.update(
-                    "results",
-                    self.results + [{"job": self.job, "seed": self.seed, "training": metrics_train_val}],
-                )
                 current_score = sum([metrics[x] for x in metrics if "vap" in x or "var" in x])
                 improved = current_score > best_score
                 if improved:
@@ -398,11 +599,28 @@ class Experiment:
                     best_epoch = epoch
                     torch.save({"optimizer": self.optimizer.state_dict(), "model": self.model.state_dict()}, self.ckpt_path)
 
+                flush_results = improved or (epoch + 1) % self.result_flush_interval_epochs == 0
+                self.logger.update(
+                    "results",
+                    self.results + [{"job": self.job, "seed": self.seed, "training": metrics_train_val}],
+                    flush=flush_results,
+                )
+
                 wait = epoch - best_epoch
+                stopped = wait >= self.patience
                 total_duration = datetime.datetime.now() - process_start
-                for line in self._format_epoch_summary(metrics, duration, total_duration, best_epoch, wait):
+                for line in self._format_epoch_summary(
+                    metrics,
+                    duration,
+                    total_duration,
+                    best_epoch,
+                    wait,
+                    previous_metrics=previous_metrics,
+                    improved=improved,
+                    stopped=stopped,
+                ):
                     self._write(line)
-                if improved:
+                if improved and self.disable_tqdm:
                     self._write(f"Saved best checkpoint: epoch={epoch + 1} path={self.ckpt_path}")
 
                 epoch_progress.update(1)
@@ -412,14 +630,17 @@ class Experiment:
                     lr=f"{self.optimizer.param_groups[0]['lr']:.2e}",
                     refresh=False,
                 )
-                if wait >= self.patience:
-                    self._write(
-                        f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] early_stop "
-                        f"epoch={epoch + 1} best_epoch={best_epoch + 1} patience={self.patience}"
-                    )
+                previous_metrics = metrics
+                if stopped:
+                    if self.disable_tqdm:
+                        self._write(
+                            f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] early_stop "
+                            f"epoch={epoch + 1} best_epoch={best_epoch + 1} patience={self.patience}"
+                        )
                     break
         finally:
             epoch_progress.close()
+            self.logger.flush()
 
         self._write(f"Loading best checkpoint from epoch {best_epoch + 1}; starting test...")
         checkpoint = torch.load(self.ckpt_path, weights_only=False)
@@ -432,6 +653,8 @@ class Experiment:
             factor=self.factor,
             show_progress=self.show_progress,
             phase="Test",
+            progress_interval_batches=self.progress_interval_batches,
+            non_blocking_transfer=self.non_blocking_transfer,
         )
         e.compute_metrics()
         l = {"tloss": e.metrics["loss"]}
@@ -472,6 +695,7 @@ class Experiment:
                         max_length=self.max_length,
                         batch_size=self.batch_size,
                         workers=self.workers,
+                        performance=self.performance,
                     )
                     self.model = self.get_model()
                     self.model.to(self.device)
@@ -487,4 +711,5 @@ class Experiment:
                     self.results.append({"job": self.job, "seed": self.seed, "training": training, "test": test, "duration": duration})
                     self.logger.update("results", self.results)
                     print(f"duration: {duration}")
+        self.logger.flush(pretty=True)
         print(f"[{datetime.datetime.now()}] Experiment ends")

@@ -1,5 +1,6 @@
 import os
 import json
+import tempfile
 from functools import reduce
 import operator
 
@@ -33,21 +34,51 @@ def setInDict(dataDict, mapList, value):
 class Logger:
     def __init__(self, folder, filename, enable=False):
         self.enable = enable
+        self.path = os.path.join(folder, f"{filename}.json")
+        self._document = None
         if self.enable:
-            if not os.path.exists(folder):
-                os.makedirs(folder)
+            os.makedirs(folder, exist_ok=True)
 
-            self.path = os.path.join(folder, f"{filename}.json")
+    def _load(self):
+        if self._document is None:
+            if os.path.exists(self.path):
+                with open(self.path, "r") as handle:
+                    self._document = json.load(handle)
+            else:
+                self._document = {}
+        return self._document
+
+    def flush(self, pretty=False):
+        if not self.enable or self._document is None:
+            return
+        folder = os.path.dirname(self.path) or "."
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w", encoding="utf-8", dir=folder, delete=False, suffix=".tmp"
+            ) as handle:
+                temporary_path = handle.name
+                json.dump(
+                    self._document,
+                    handle,
+                    ensure_ascii=False,
+                    indent=2 if pretty else None,
+                    separators=None if pretty else (",", ":"),
+                )
+                handle.flush()
+            os.replace(temporary_path, self.path)
+        finally:
+            if temporary_path and os.path.exists(temporary_path):
+                os.remove(temporary_path)
 
     def create(self):
         if self.enable:
-            with open(self.path, "w") as hundle:
-                json.dump({}, hundle, indent=2)
+            self._document = {}
+            self.flush()
 
-    def update(self, key, content):
+    def update(self, key, content, flush=True):
         if self.enable:
-            with open(self.path, "r") as hundle:
-                json_file = json.load(hundle)
+            json_file = self._load()
 
             if isinstance(key, str):
                 json_file[key] = content
@@ -59,13 +90,11 @@ class Logger:
             else:
                 raise Exception("key must be either str or iterable.")
 
-            with open(self.path, "w") as hundle:
-                json.dump(json_file, hundle, indent=2)
+            if flush:
+                self.flush()
 
     def get_values(self, key):
         if self.enable:
-            with open(self.path, "r") as hundle:
-                json_file = json.load(hundle)
-            return json_file[key]
+            return self._load()[key]
         else:
             return []
