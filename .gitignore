@@ -1,6 +1,11 @@
 # 忽略检查点目录
 ckpt/
 
+# Python 测试与编译缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # 忽略 fairseq 子模块
 fairseq/
 
