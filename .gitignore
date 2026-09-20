@@ -5,7 +5,7 @@ ckpt/
 __pycache__/
 *.py[cod]
 .pytest_cache/
-
+.tmp/
 # 忽略 fairseq 子模块
 fairseq/
 
@@ -16,6 +16,7 @@ fairseq/
 # 忽略数据集和资源目录
 auvire_lavdf_avhubert_npz_v2_bundle/
 AuViRe_LAVDF_NPZ_v2_完整文件/
+
 
 # 忽略压缩包和脚本文件
 auvire_lavdf_avhubert_npz_v2_bundle.zip

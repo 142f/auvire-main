@@ -69,10 +69,18 @@ python scripts/results.py
 ```
 
 # Train
-To train AuVire on LAV-DF and AV-Deepfake1M run:
+To train AuVire with FPDT on LAV-DF and AV-Deepfake1M run:
 ```
 python scripts/train.py -d lavdf
 python scripts/train.py -d avdeepfake1m
+```
+These commands enable FPDT with the defaults from `src/config.py` (`weight=0.1`,
+`source=feature_noise`, `noise_std=0.02`, and `noise_modality=random`). The
+`feature_noise` source is a feature-space prototype, not a media-level noise or
+compression experiment. To run the legacy single-view baseline instead, use:
+```
+python scripts/train.py -d lavdf --no-fpdt
+python scripts/train.py -d avdeepfake1m --no-fpdt
 ```
 Training logs, in `json` format, and model checkpoints, in `pth` format, will be created in `ckpt` folder.
 > ⚠️ We already provide them so to re-run the training, one should first move them.
