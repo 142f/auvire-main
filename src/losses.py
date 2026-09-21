@@ -1,3 +1,6 @@
+import math
+from numbers import Integral, Real
+
 import torchvision
 import torch.nn as nn
 import torch
@@ -87,7 +90,10 @@ class BCELoss(nn.Module):
 
 class CombinedLoss(nn.Module):
 
-    def __init__(self, alpha, gamma, composition, factor):
+    def __init__(
+        self, alpha, gamma, composition, factor,
+        enable_ib_ecl=False, ib_ecl_weight=0.1, ib_ecl_beta=0.05,
+    ):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -98,6 +104,109 @@ class CombinedLoss(nn.Module):
         self.l_det = 1.0 if "det" in composition else 0.0
         self.factor = factor
         self.bce = BCELoss()
+        # Independent switch: the legacy composition and all its weights stay intact.
+        if not isinstance(enable_ib_ecl, bool):
+            raise TypeError("enable_ib_ecl must be a bool")
+        self.enable_ib_ecl = enable_ib_ecl
+        self.ib_ecl_weight = ib_ecl_weight
+        self.ib_ecl_beta = ib_ecl_beta
+        if self.enable_ib_ecl:
+            for name, value in (("ib_ecl_weight", ib_ecl_weight), ("ib_ecl_beta", ib_ecl_beta)):
+                if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
+                    raise ValueError(f"{name} must be a finite real number")
+            if ib_ecl_weight < 0 or ib_ecl_beta <= 0:
+                raise ValueError("ib_ecl_weight must be >= 0 and ib_ecl_beta must be > 0")
+            if not self.l_diou:
+                raise ValueError("IB-ECL requires the original DIoU loss to anchor common boundary bias")
+
+    def ib_ecl(self, inputs, targets):
+        """Instance-balanced consistency of decoded absolute endpoints.
+
+        inputs: nonempty list of [B, T_level, 3] (logit, left, right).
+        targets: [B, T, 3] (binary label, GT left, GT right).
+        Both predicted and GT offsets use ORIGINAL FRAME units, at every level.
+        Padding/background with label 0 is excluded; no feature-value-based mask
+        is inferred. The existing dataset must align its labels with its features.
+        This method returns a scalar and never detaches the prediction consensus.
+        """
+        if not isinstance(inputs, (list, tuple)) or not inputs:
+            raise ValueError("IB-ECL expects a nonempty list/tuple of prediction levels")
+        if targets.ndim != 3 or targets.shape[-1] != 3:
+            raise ValueError("IB-ECL targets must have shape [B, T, 3]")
+        if len(inputs) > len(self.factor):
+            raise ValueError("There must be a scale factor for every prediction level")
+        if not torch.all((targets[..., 0] == 0) | (targets[..., 0] == 1)):
+            raise ValueError("IB-ECL target labels must be finite binary values (0 or 1)")
+
+        # Keep double precision for gradcheck; avoid half/bfloat16 accumulation.
+        dtype = torch.float64 if targets.dtype == torch.float64 or any(
+            prediction.dtype == torch.float64 for prediction in inputs
+        ) else torch.float32
+        predicted, ground_truth, times, batch_ids, level_ids = [], [], [], [], []
+        zero = targets.new_zeros((), dtype=dtype)
+        for level, prediction in enumerate(inputs):
+            stride = self.factor[level]
+            if isinstance(stride, bool) or not isinstance(stride, Integral) or stride < 1:
+                raise ValueError("IB-ECL scale factors must be positive integers")
+            target_level = targets[:, ::stride, :]
+            if prediction.shape != target_level.shape or prediction.device != targets.device:
+                raise ValueError(f"IB-ECL level {level}: prediction shape/device must match targets[:, ::{stride}, :]")
+            if not prediction.is_floating_point():
+                raise TypeError("IB-ECL predictions must be floating-point tensors")
+            # An empty sum retains the graph without reading ignored values or
+            # overflowing on a large half-precision prediction sum.
+            zero = zero + prediction[:, :0, 1:3].sum(dtype=dtype)
+            batch, index = (target_level[..., 0] == 1).nonzero(as_tuple=True)
+            predicted.append(prediction[batch, index, 1:3].to(dtype=dtype))
+            ground_truth.append(target_level[batch, index, 1:3].detach().to(dtype=dtype))
+            times.append((index * stride).to(dtype=dtype))
+            batch_ids.append(batch)
+            level_ids.append(torch.full_like(batch, level))
+
+        offsets = torch.cat(predicted)
+        if offsets.shape[0] == 0:
+            return zero
+        gt_offsets = torch.cat(ground_truth)
+        if not torch.all(torch.isfinite(offsets) & (offsets >= 0)):
+            raise ValueError("IB-ECL positive predicted offsets must be finite and non-negative")
+        if not torch.all(torch.isfinite(gt_offsets) & (gt_offsets >= 0)):
+            raise ValueError("IB-ECL positive GT offsets must be finite and non-negative")
+        position = torch.cat(times)
+        endpoints = torch.stack((position - offsets[:, 0], position + offsets[:, 1]), dim=-1)
+        gt_endpoints = torch.stack((position - gt_offsets[:, 0], position + gt_offsets[:, 1]), dim=-1)
+
+        # Exact GT endpoint keys, not connected components of the positive mask:
+        # adjacent/overlapping instances keep the assignment in the original GT.
+        keys = torch.cat((torch.cat(batch_ids).to(dtype=dtype)[:, None], gt_endpoints), dim=1)
+        instances, instance_id = torch.unique(keys, dim=0, return_inverse=True)
+        pairs, pair_id, nodes_per_pair = torch.unique(
+            torch.stack((instance_id, torch.cat(level_ids)), dim=1),
+            dim=0, return_inverse=True, return_counts=True,
+        )
+        levels_per_instance = torch.bincount(pairs[:, 0], minlength=instances.shape[0])
+        weights = 1.0 / (
+            levels_per_instance[instance_id].to(dtype=dtype)
+            * nodes_per_pair[pair_id].to(dtype=dtype)
+        )
+        # w_i = 1 / (number of active levels * nodes in this instance/level).
+        # Shift the coordinate origin by the SAME GT endpoints for every node
+        # of an instance before summation. Algebraically this is still z_i-mu_g:
+        # (z_i-z_gt) - sum_j w_j*(z_j-z_gt) = z_i - mu_g.
+        # It is NOT another GT regression term; common boundary bias still cancels.
+        # Centering avoids roundoff from summing large absolute frame positions.
+        centered = endpoints - instances[instance_id, 1:]
+        consensus = centered.new_zeros((instances.shape[0], 2)).index_add(
+            0, instance_id, weights[:, None] * centered
+        )  # Differentiable mu_g-z_gt; never detach the consensus.
+        duration = (instances[:, 2] - instances[:, 1]).clamp_min(1)
+        deviations = (centered - consensus[instance_id]) / duration[instance_id, None]
+        node_losses = torch.nn.functional.smooth_l1_loss(
+            deviations, torch.zeros_like(deviations), beta=self.ib_ecl_beta, reduction="none"
+        ).mean(dim=-1)
+        loss = (weights * node_losses).sum() / instances.shape[0]
+        if not torch.isfinite(loss):
+            raise FloatingPointError("IB-ECL produced a non-finite loss; inspect input/GT magnitudes")
+        return loss + zero
 
     def smooth_l1(self, inputs, targets):
         loss = torch.nn.functional.smooth_l1_loss(inputs[:, :, 1:] / 25, targets[:, :, 1:] / 25, reduction="none")
@@ -163,4 +272,11 @@ class CombinedLoss(nn.Module):
         loss_det = self.detection_loss(inputs, targets)
         loss_rec = self.reconstruction_loss(errors, targets)
         loss = (loss_loc + self.l_det * loss_det + self.l_rec * loss_rec) / (1 + self.l_det + self.l_rec)
-        return loss.mean()
+        loss = loss.mean()
+        # IB-ECL is a training-only regularizer. Evaluation.get_predictions()
+        # executes under torch.no_grad(), so validation/test loss and inference
+        # retain the baseline objective and incur no ECL grouping/aggregation.
+        # The disabled path remains the exact legacy path as well.
+        if self.enable_ib_ecl and self.ib_ecl_weight > 0 and torch.is_grad_enabled():
+            loss = loss + self.ib_ecl_weight * self.ib_ecl(inputs, targets)
+        return loss

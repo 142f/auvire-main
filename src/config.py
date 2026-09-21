@@ -21,7 +21,7 @@ DEFAULT_LAVDF = {
     "epochs": 100,
     "patience": 10,
     "dataset": {"name": "lavdf", "backbone": "avhubert", "params": {"max_length": 512, "partition": "whole"}},
-    "dataloader": {"batch_size": 64, "workers": 8},
+    "dataloader": {"batch_size": 64, "workers": 10},
     "model": {
         "type": {"reconstruction": "cnn", "encoder": "cnn"},
         "d_model": 128,
@@ -33,7 +33,16 @@ DEFAULT_LAVDF = {
         "conv": {"use_ln": True, "use_rl": True, "use_do": False},
         "dropout": {"main": 0.1, "head": 0.5},
     },
-    "criterion": {"composition": ["focal", "diou", "rec"], "params": {"alpha": 0.98, "gamma": 2}},
+    "criterion": {
+        "composition": ["focal", "diou", "rec"],  # Preserve baseline loss composition.
+        "params": {
+            "alpha": 0.98,
+            "gamma": 2,
+            "enable_ib_ecl": True,  # Enabled by default for standard training.
+            "ib_ecl_weight": 0.03,
+            "ib_ecl_beta": 0.05,
+        },
+    },
     "optimization": {
         "lr": 0.001,
         "scheduler": {"name": "reduceonplateau", "params": {"patience": 7, "factor": 0.1, "min_lr": 0}},
@@ -51,7 +60,7 @@ DEFAULT_AVDEEPFAKE1M = {
     "epochs": 100,
     "patience": 10,
     "dataset": {"name": "avdeepfake1m", "backbone": "avhubert", "params": {"max_length": 512, "partition": "whole"}},
-    "dataloader": {"batch_size": 64, "workers": 8},
+    "dataloader": {"batch_size": 64, "workers": 10},
     "model": {
         "type": {"reconstruction": "cnn", "encoder": "cnn"},
         "d_model": 128,
@@ -63,7 +72,16 @@ DEFAULT_AVDEEPFAKE1M = {
         "conv": {"use_ln": True, "use_rl": True, "use_do": False},
         "dropout": {"main": 0.1, "head": 0.5},
     },
-    "criterion": {"composition": ["focal", "diou", "rec"], "params": {"alpha": 0.98, "gamma": 2}},
+    "criterion": {
+        "composition": ["focal", "diou", "rec"],  # Preserve baseline loss composition.
+        "params": {
+            "alpha": 0.98,
+            "gamma": 2,
+            "enable_ib_ecl": True,  # Enabled by default for standard training.
+            "ib_ecl_weight": 0.03,
+            "ib_ecl_beta": 0.05,
+        },
+    },
     "optimization": {
         "lr": 0.001,
         "scheduler": {"name": "reduceonplateau", "params": {"patience": 7, "factor": 0.1, "min_lr": 0}},

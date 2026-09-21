@@ -22,7 +22,7 @@ os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
 
 def get_filename(cfg):
-    return "_".join(
+    filename = "_".join(
         map(
             str,
             [
@@ -64,6 +64,14 @@ def get_filename(cfg):
             ],
         )
     )
+    # Never reuse baseline/other IB-ECL results or checkpoints when opted in.
+    # The disabled/missing-key path returns the EXACT legacy filename.
+    params = cfg["criterion"]["params"]
+    if params.get("enable_ib_ecl", False):
+        weight = float(params.get("ib_ecl_weight", 0.1))
+        beta = float(params.get("ib_ecl_beta", 0.05))
+        filename += f"_ib_ecl_w{weight}_b{beta}"
+    return filename
 
 
 def check_complete(path, seeds):
@@ -172,6 +180,9 @@ class Experiment:
         self.criterion_composition = cfg["criterion"]["composition"]
         self.alpha = cfg["criterion"]["params"]["alpha"]
         self.gamma = cfg["criterion"]["params"]["gamma"]
+        self.enable_ib_ecl = cfg["criterion"]["params"].get("enable_ib_ecl", False)
+        self.ib_ecl_weight = cfg["criterion"]["params"].get("ib_ecl_weight", 0.1)
+        self.ib_ecl_beta = cfg["criterion"]["params"].get("ib_ecl_beta", 0.05)
         self.lr = cfg["optimization"]["lr"]
         self.scheduler_name = cfg["optimization"]["scheduler"]["name"]
         self.scheduler_params = dict(cfg["optimization"]["scheduler"].get("params") or {})
@@ -226,6 +237,9 @@ class Experiment:
             gamma=self.gamma,
             composition=self.criterion_composition,
             factor=self.factor,
+            enable_ib_ecl=self.enable_ib_ecl,
+            ib_ecl_weight=self.ib_ecl_weight,
+            ib_ecl_beta=self.ib_ecl_beta,
         )
 
     def get_scheduler(self, name, optimizer):
