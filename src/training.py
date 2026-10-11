@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import unicodedata
+from time import perf_counter
 
 from src.loaders import get_loaders
 from src.models import Model
@@ -17,6 +18,103 @@ from src.logger import Logger
 from src.losses import CombinedLoss
 from src.seed import seed_everything
 from src.perf_monitor import stage, batches
+
+_EPOCH_LOG = os.path.join("runs", "epoch_times.jsonl")
+
+
+def _epoch_log_path():
+    return os.environ.get("AUVIRE_EPOCH_LOG", _EPOCH_LOG)
+
+
+def _append_epoch_stage(epoch, stage_name, seconds, **extra):
+    path = _epoch_log_path()
+    directory = os.path.dirname(path)
+    if directory:
+        os.makedirs(directory, exist_ok=True)
+    record = {"epoch": int(epoch), "stage": stage_name, "seconds": round(float(seconds), 3)}
+    for key, value in extra.items():
+        if value is not None:
+            record[key] = value
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        handle.flush()
+    return record
+
+
+class _EpochClock:
+    """One perf_counter per stage boundary. The epoch line is the wall total."""
+
+    def __init__(self, epoch):
+        self.epoch = int(epoch)
+        self.started = perf_counter()
+        self.mark = self.started
+
+    def stop(self, stage_name, **extra):
+        now = perf_counter()
+        seconds = now - self.mark
+        self.mark = now
+        return _append_epoch_stage(self.epoch, stage_name, seconds, **extra)
+
+    def finish(self):
+        return _append_epoch_stage(self.epoch, "epoch", perf_counter() - self.started)
+
+
+def _time_validation(evaluation, clock):
+    """Time one validation call, then put eval's globals back."""
+    import src.eval as eval_module
+
+    original_get = evaluation.get_predictions
+    original_transform = evaluation.transform_predictions
+    original_dfd = evaluation.compute_dfd_metrics
+    original_nms = eval_module.soft_nms_torch_parallel
+    original_ap = eval_module.AP
+    original_ar = eval_module.AR
+
+    def timed_get():
+        original_get()
+        clock.stop("val_forward", batches=len(evaluation.loader))
+
+    def timed_transform():
+        original_transform()
+        clock.stop("transform")
+
+    def timed_nms(*args, **kwargs):
+        result = original_nms(*args, **kwargs)
+        clock.stop("softnms")
+        return result
+
+    class TimedAP(original_ap):
+        def __call__(self, *args, **kwargs):
+            result = super().__call__(*args, **kwargs)
+            clock.stop("ap")
+            return result
+
+    class TimedAR(original_ar):
+        def __call__(self, *args, **kwargs):
+            result = super().__call__(*args, **kwargs)
+            clock.stop("ar")
+            return result
+
+    def timed_dfd(proposals):
+        original_dfd(proposals)
+        clock.stop("metrics")
+
+    evaluation.get_predictions = timed_get
+    evaluation.transform_predictions = timed_transform
+    evaluation.compute_dfd_metrics = timed_dfd
+    eval_module.soft_nms_torch_parallel = timed_nms
+    eval_module.AP = TimedAP
+    eval_module.AR = TimedAR
+    try:
+        evaluation.compute_metrics()
+    finally:
+        evaluation.get_predictions = original_get
+        evaluation.transform_predictions = original_transform
+        evaluation.compute_dfd_metrics = original_dfd
+        eval_module.soft_nms_torch_parallel = original_nms
+        eval_module.AP = original_ap
+        eval_module.AR = original_ar
+
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 
@@ -496,6 +594,7 @@ class Experiment:
 
     def train_one_epoch(self, epoch):
         start_epoch = datetime.datetime.now()
+        clock = _EpochClock(epoch + 1)
         monitor = getattr(self, "perf_monitor", None)
         audit = getattr(self, "regression_audit", None)
         self.model.train()
@@ -553,6 +652,7 @@ class Experiment:
                         },
                         refresh=False,
                     )
+        clock.stop("train", batches=len(self.loaders["train"]))
 
         e = Evaluation(
             model=self.model,
@@ -567,7 +667,8 @@ class Experiment:
             progress_interval_batches=self.progress_interval_batches,
             non_blocking_transfer=self.non_blocking_transfer,
         )
-        e.compute_metrics()
+        _time_validation(e, clock)
+        clock.finish()
         epoch_loss = (tot_loss / len(self.loaders["train"])).item()
         metrics, _ = self.adjust_metrics(
             loss=epoch_loss,
