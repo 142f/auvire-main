@@ -17,9 +17,17 @@ def collate_fn(batch):
     batch = [item for item in batch if item is not None]
     if not batch:
         raise RuntimeError("The complete batch is invalid; inspect the dataset error for the source path.")
-    batch_1 = [b[:3] for b in batch]
-    batch_2 = [b[3] for b in batch]
-    return torch.utils.data.dataloader.default_collate(batch_1), batch_2
+    videos = [item[0] for item in batch]
+    audios = [item[1] for item in batch]
+    periods = [item[3] for item in batch]
+    rectangular = all(tensor.shape == videos[0].shape for tensor in videos) and all(
+        tensor.shape == audios[0].shape for tensor in audios
+    )
+    if rectangular:
+        stacked = torch.utils.data.dataloader.default_collate([item[:3] for item in batch])
+        return stacked, periods
+    targets = torch.utils.data.dataloader.default_collate([item[2] for item in batch])
+    return (videos, audios, targets), periods
 
 
 def get_dataset(dataset, backbone, partition, split, max_length, without, showsize):

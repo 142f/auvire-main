@@ -1,7 +1,6 @@
 import torch
 from torch import nn
 from torchvision.ops import FeaturePyramidNetwork as FPN
-from transformers import DistilBertModel
 
 from collections import OrderedDict
 
@@ -357,6 +356,8 @@ class PreTrainedTransformerCrossModalReconstructionModel(nn.Module):
         self.attn_mask = Mask(num_tokens=max_length, win_size=win_size, device=device)
         self.pos_embed = nn.Embedding(max_length, d_model)
         self.positions = torch.arange(0, max_length).unsqueeze(0).to(device)
+        from transformers import DistilBertModel
+
         self.transformer = DistilBertModel.from_pretrained(
             "distilbert-base-uncased", torch_dtype=torch.float32, attn_implementation="sdpa"
         ).transformer
@@ -935,6 +936,8 @@ class Model(nn.Module):
         return x[0].permute((0, 2, 1)), x[1].permute((0, 2, 1))
 
     def get_reconstruction_pairs(self, audio, video):
+        # Each modality keeps its own forward. Sharing the repeated audio
+        # reconstruction changed validation AP outside the baseline tolerance.
         reconstructed = [
             self.reconstruction_model(audio) if modality["input"] == "audio" else self.reconstruction_model(video)
             for modality in self.reconstruction_modality

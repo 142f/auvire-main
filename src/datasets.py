@@ -25,51 +25,80 @@ def _ensure_stable_order(videos):
         videos.sort(key=lambda video: _path_sort_key(video[0]))
 
 
+def _lavdf_feature_dir(split):
+    """Prefer the published embedding tree, then the flat local split directory."""
+    nested = os.path.join("data", "LAV-DF_emb", split)
+    if os.path.isdir(nested):
+        return nested
+    return os.path.join("data", split)
+
+
+def _lavdf_metadata_path():
+    nested = os.path.join("data", "LAV-DF_emb", "metadata.min.json")
+    if os.path.exists(nested):
+        return nested
+    return os.path.join("data", "metadata.min.json")
+
+
+def _lavdf_metadata_key(root, metadata):
+    """Match either ``<split>/<id>/<nest>`` embeddings or flat ``<split>/<id>`` clips."""
+    parts = [part for part in root.replace("\\", "/").split("/") if part]
+    candidates = []
+    if len(parts) >= 3:
+        candidates.append("/".join(parts[-3:-1]) + ".mp4")
+    if len(parts) >= 2:
+        candidates.append("/".join(parts[-2:]) + ".mp4")
+    for key in candidates:
+        if key in metadata:
+            return key
+    raise KeyError(candidates[0] if candidates else root)
+
+
 def period2target(fake_periods, max_length):
     """Convert temporal fake periods to the shared localization target format."""
     tfl_target = torch.zeros((max_length, 3))
     for fake_period in fake_periods:
-        fake_period_indx = [int(x * 25) for x in fake_period]
-        tfl_target[fake_period_indx[0] : fake_period_indx[1] + 1, 0] = 1
-        for i in range(fake_period_indx[0], fake_period_indx[1] + 1):
-            tfl_target[i, 1] = i - fake_period_indx[0]
-            tfl_target[i, 2] = fake_period_indx[1] - i
+        start = int(fake_period[0] * 25)
+        end = int(fake_period[1] * 25)
+        # Out-of-range periods keep the original index fill, including its error.
+        if start < 0 or end >= max_length:
+            tfl_target[start : end + 1, 0] = 1
+            for i in range(start, end + 1):
+                tfl_target[i, 1] = i - start
+                tfl_target[i, 2] = end - i
+            continue
+        if end < start:
+            continue
+        tfl_target[start : end + 1, 0] = 1
+        offsets = torch.arange(end - start + 1, dtype=tfl_target.dtype)
+        tfl_target[start : end + 1, 1] = offsets
+        tfl_target[start : end + 1, 2] = offsets.flip(0)
     return tfl_target
 
 
-def _load_padded_features(data_path, max_length):
-    """Load numeric NPZ features and copy them once into fixed-size tensors."""
+def _clone_prefix(array, length):
+    """Copy a numeric prefix before a memory-mapped or NPZ buffer is released."""
+    view = torch.from_numpy(np.ascontiguousarray(array[:length]))
+    return view.clone()
+
+
+def _load_compact_features(data_path, max_length):
+    """Load the unpadded prefix shared by the video and audio streams."""
     base_path = os.path.splitext(data_path)[0]
     video_npy = f"{base_path}.video.npy"
     audio_npy = f"{base_path}.audio.npy"
     if not (os.path.exists(video_npy) and os.path.exists(audio_npy)):
         with np.load(data_path, allow_pickle=False) as data:
-            video_source = torch.tensor(data["video_features"])
-            audio_source = torch.tensor(data["audio_features"])
-        length = min(video_source.shape[0], audio_source.shape[0], max_length)
-        video_features = torch.cat(
-            [video_source[:length], torch.zeros((max_length - length, video_source.shape[1]))]
-        )
-        audio_features = torch.cat(
-            [audio_source[:length], torch.zeros((max_length - length, audio_source.shape[1]))]
-        )
-        return video_features, audio_features
+            video_np = data["video_features"]
+            audio_np = data["audio_features"]
+            length = min(int(video_np.shape[0]), int(audio_np.shape[0]), max_length)
+            return _clone_prefix(video_np, length), _clone_prefix(audio_np, length)
 
     video_array = np.load(video_npy, mmap_mode="c", allow_pickle=False)
     audio_array = np.load(audio_npy, mmap_mode="c", allow_pickle=False)
     try:
-        video_source = torch.from_numpy(video_array)
-        audio_source = torch.from_numpy(audio_array)
-
-        length = min(video_source.shape[0], audio_source.shape[0], max_length)
-        video_features = torch.zeros(
-            (max_length, video_source.shape[1]), dtype=video_source.dtype
-        )
-        audio_features = torch.zeros(
-            (max_length, audio_source.shape[1]), dtype=audio_source.dtype
-        )
-        video_features[:length].copy_(video_source[:length])
-        audio_features[:length].copy_(audio_source[:length])
+        length = min(int(video_array.shape[0]), int(audio_array.shape[0]), max_length)
+        return _clone_prefix(video_array, length), _clone_prefix(audio_array, length)
     finally:
         mmap_video = getattr(video_array, "_mmap", None)
         mmap_audio = getattr(audio_array, "_mmap", None)
@@ -77,7 +106,38 @@ def _load_padded_features(data_path, max_length):
             mmap_video.close()
         if mmap_audio is not None:
             mmap_audio.close()
+
+
+def _load_padded_features(data_path, max_length):
+    """Load numeric features and copy them once into fixed-size tensors."""
+    video, audio = _load_compact_features(data_path, max_length)
+    video_features = torch.zeros((max_length, video.shape[1]), dtype=video.dtype)
+    audio_features = torch.zeros((max_length, audio.shape[1]), dtype=audio.dtype)
+    if video.shape[0]:
+        video_features[: video.shape[0]].copy_(video)
+        audio_features[: audio.shape[0]].copy_(audio)
     return video_features, audio_features
+
+
+def pad_feature_batch(features, max_length, device="cpu", non_blocking=False):
+    """Right-pad a batch of feature tensors with zeros up to ``max_length``."""
+    if torch.is_tensor(features):
+        if features.shape[1] == max_length:
+            return features.to(device, non_blocking=non_blocking)
+        out = features.new_zeros((features.shape[0], max_length, features.shape[2]), device=torch.device(device))
+        width = min(features.shape[1], max_length)
+        if width:
+            out[:, :width].copy_(features[:, :width].to(device, non_blocking=non_blocking))
+        return out
+
+    width = features[0].shape[1]
+    dtype = features[0].dtype
+    out = torch.zeros((len(features), max_length, width), dtype=dtype, device=torch.device(device))
+    for index, tensor in enumerate(features):
+        count = min(tensor.shape[0], max_length)
+        if count:
+            out[index, :count].copy_(tensor[:count].to(device, non_blocking=non_blocking))
+    return out
 
 
 class LAVDF(Dataset):
@@ -93,13 +153,13 @@ class LAVDF(Dataset):
                 self.videos = json.load(hundle)
             _ensure_stable_order(self.videos)
         else:
-            directory = f"data/LAV-DF_emb/{split}"
-            with open("data/LAV-DF_emb/metadata.min.json", "r") as f:
+            directory = _lavdf_feature_dir(split)
+            with open(_lavdf_metadata_path(), "r") as f:
                 metadata = {x["file"]: (int(x["modify_video"]), int(x["modify_audio"]), x["fake_periods"]) for x in json.load(f)}
             self.videos = []
             for root, name in _iter_files_stably(directory):
                 if name == "features.npz":
-                    fn = "/".join(os.path.dirname(root).replace("\\", "/").split("/")[-2:]) + ".mp4"
+                    fn = _lavdf_metadata_key(root, metadata)
                     video_target, audio_target, fake_periods = metadata[fn]
                     self.videos.append((os.path.join(root, name), video_target, audio_target, fake_periods))
             self.videos.sort(key=lambda video: _path_sort_key(video[0]))
@@ -130,7 +190,7 @@ class LAVDF(Dataset):
             data_path, video_target, audio_target, fake_periods = self.videos[idx]
             if self.backbone == "avhubert":
                 data_path = data_path.replace("mediapipe/", "").replace("LAV-DF_emb", "LAV-DF_emb_avhubert")
-            video_features, audio_features = _load_padded_features(data_path, self.max_length)
+            video_features, audio_features = _load_compact_features(data_path, self.max_length)
             tfl_target = self.period2target(fake_periods)
             return [video_features, audio_features, tfl_target, fake_periods]
         except (OSError, ValueError, KeyError, IndexError, TypeError):
@@ -226,7 +286,7 @@ class AVDeepFake1M(Dataset):
             data_path, video_target, audio_target, visual_fake_segments, audio_fake_segments, fake_periods = self.videos[idx]
             if self.backbone == "avhubert":
                 data_path = data_path.replace("mediapipe/", "").replace("AV-Deepfake1M_emb", "AV-Deepfake1M_emb_avhubert")
-            video_features, audio_features = _load_padded_features(data_path, self.max_length)
+            video_features, audio_features = _load_compact_features(data_path, self.max_length)
             tfl_target = self.period2target(fake_periods)
             return [video_features, audio_features, tfl_target, fake_periods]
         except (OSError, ValueError, KeyError, IndexError, TypeError):

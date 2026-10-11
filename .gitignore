@@ -12,6 +12,7 @@ fairseq/
 # 忽略运行日志和状态目录
 运行日志_AVHuBERT_全量/
 运行状态_AVHuBERT_全量/
+data/
 
 # 忽略数据集和资源目录
 auvire_lavdf_avhubert_npz_v2_bundle/
