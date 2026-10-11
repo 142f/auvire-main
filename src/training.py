@@ -117,6 +117,8 @@ def _time_validation(evaluation, clock):
 
 
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
+# Host cpu_count is 128; this container can run 4 threads.
+torch.set_num_threads(4)
 
 
 def get_filename(cfg):
