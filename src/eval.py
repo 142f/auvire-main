@@ -1,6 +1,7 @@
 from src.metrics import AP, AR
 from src.post_process import soft_nms_torch_parallel
 from src.perf_monitor import stage, batches
+from src.datasets import pad_feature_batch
 
 import torch
 import numpy as np
@@ -15,8 +16,9 @@ def adjust_data(data, task, dataset, device, non_blocking=False):
     if dataset in {"lavdf", "avdeepfake1m"}:
         data, fake_periods = data
         video_features, audio_features, labels = data
-        video_features = video_features.to(device, non_blocking=non_blocking)
-        audio_features = audio_features.to(device, non_blocking=non_blocking)
+        max_length = labels.shape[1]
+        video_features = pad_feature_batch(video_features, max_length, device, non_blocking)
+        audio_features = pad_feature_batch(audio_features, max_length, device, non_blocking)
         adjusted = {
             "video_features": video_features,
             "audio_features": audio_features,
