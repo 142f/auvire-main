@@ -76,10 +76,15 @@ def period2target(fake_periods, max_length):
     return tfl_target
 
 
-def _clone_prefix(array, length):
-    """Copy a numeric prefix before a memory-mapped or NPZ buffer is released."""
-    view = torch.from_numpy(np.ascontiguousarray(array[:length]))
-    return view.clone()
+def _prefix_view(array, length):
+    """Prefix view without an extra copy.
+
+    The returned tensor keeps the source buffer alive (npz arrays own their
+    bytes, the read-only memmap is held through ``base``), so the values stay
+    valid after the file object is released. Cloning here would duplicate every
+    feature once per sample without changing any value.
+    """
+    return torch.from_numpy(np.ascontiguousarray(array[:length]))
 
 
 def _load_compact_features(data_path, max_length):
@@ -92,20 +97,14 @@ def _load_compact_features(data_path, max_length):
             video_np = data["video_features"]
             audio_np = data["audio_features"]
             length = min(int(video_np.shape[0]), int(audio_np.shape[0]), max_length)
-            return _clone_prefix(video_np, length), _clone_prefix(audio_np, length)
+            return _prefix_view(video_np, length), _prefix_view(audio_np, length)
 
+    # The read-only mappings stay alive through the returned tensors' ``base``
+    # and are released together with them; no explicit close and no copy.
     video_array = np.load(video_npy, mmap_mode="c", allow_pickle=False)
     audio_array = np.load(audio_npy, mmap_mode="c", allow_pickle=False)
-    try:
-        length = min(int(video_array.shape[0]), int(audio_array.shape[0]), max_length)
-        return _clone_prefix(video_array, length), _clone_prefix(audio_array, length)
-    finally:
-        mmap_video = getattr(video_array, "_mmap", None)
-        mmap_audio = getattr(audio_array, "_mmap", None)
-        if mmap_video is not None:
-            mmap_video.close()
-        if mmap_audio is not None:
-            mmap_audio.close()
+    length = min(int(video_array.shape[0]), int(audio_array.shape[0]), max_length)
+    return _prefix_view(video_array, length), _prefix_view(audio_array, length)
 
 
 def _load_padded_features(data_path, max_length):

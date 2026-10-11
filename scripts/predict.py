@@ -11,6 +11,8 @@ from src.models import Model
 from src.post_process import soft_nms_torch_parallel
 
 torch.backends.mha.set_fastpath_enabled(False)
+# This script does not import src.training. Same 4-CPU quota.
+torch.set_num_threads(4)
 
 
 class AVDeepFake1MTestSet(Dataset):
@@ -46,6 +48,7 @@ def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+    torch.set_num_threads(1)
 
 
 def transform_tfl_predictions(preds, max_length, factor, device):

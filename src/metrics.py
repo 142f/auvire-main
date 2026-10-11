@@ -40,6 +40,51 @@ def iou_1d(proposal, target) -> Tensor:
     return inter / union
 
 
+def _label_batch(labels, videos, device):
+    """Pad ragged segments. An empty label contributes 0, matching torch.tensor(label).shape[0]."""
+    rows = [torch.tensor(labels[index]).to(device) for index in range(videos)]
+    counts = [0 if row.numel() == 0 else row.shape[0] for row in rows]
+    width = max(counts, default=0)
+    dtype = next((row.dtype for row, count in zip(rows, counts) if count), torch.float32)
+    padded = torch.zeros((videos, width, 2), dtype=dtype, device=device)
+    valid = torch.zeros((videos, width), dtype=torch.bool, device=device)
+    for index, (row, count) in enumerate(zip(rows, counts)):
+        if count:
+            padded[index, :count] = row
+            valid[index, :count] = True
+    return padded, valid, sum(counts)
+
+
+def _interval_iou_batch(proposals, targets):
+    """iou_1d over a batch. proposals is (V, P, 2) and targets is (V, L, 2)."""
+    proposal_begin = proposals[:, :, 0].unsqueeze(-1)
+    proposal_end = proposals[:, :, 1].unsqueeze(-1)
+    target_begin = targets[:, :, 0].unsqueeze(1)
+    target_end = targets[:, :, 1].unsqueeze(1)
+    inner_begin = torch.maximum(proposal_begin, target_begin)
+    inner_end = torch.minimum(proposal_end, target_end)
+    outer_begin = torch.minimum(proposal_begin, target_begin)
+    outer_end = torch.maximum(proposal_end, target_end)
+    inter = torch.clamp(inner_end - inner_begin, min=0.0)
+    union = outer_end - outer_begin
+    return inter / union
+
+
+def _first_unused_hits(hits):
+    """Match labels in order. Each label takes the first proposal that is still unused."""
+    videos, proposals, labels = hits.shape
+    taken = torch.zeros((videos, proposals), dtype=torch.bool, device=hits.device)
+    chosen = torch.zeros((videos, proposals), dtype=torch.bool, device=hits.device)
+    rows = torch.arange(videos, device=hits.device)
+    for label_index in range(labels):
+        candidates = hits[:, :, label_index] & ~taken
+        pick = candidates.any(dim=1)
+        index = candidates.to(torch.uint8).argmax(dim=1)
+        chosen[rows[pick], index[pick]] = True
+        taken[rows[pick], index[pick]] = True
+    return chosen
+
+
 class AP:
     """
     Average Precision
@@ -55,28 +100,21 @@ class AP:
         self.ap: dict = {}
 
     def __call__(self, proposals, labels) -> dict:
-
+        label_rows, label_valid, self.n_labels = _label_batch(labels, proposals.shape[0], self.device)
+        if label_rows.shape[1] == 0:
+            ious = proposals.new_zeros((proposals.shape[0], proposals.shape[1], 0))
+        else:
+            ious = _interval_iou_batch(proposals[:, :, 1:] / 25.0, label_rows)
+        confidence = proposals[:, :, 0].reshape(-1)
+        # Confidence does not depend on the IoU threshold, so one stable order is enough.
+        order = confidence.sort(stable=True, descending=True).indices
+        confidence = confidence[order]
         for iou_threshold in self.iou_thresholds:
-            values = []
-            self.n_labels = 0
-            for i in range(proposals.shape[0]):
-                proposals_ = proposals[i]
-                labels_ = torch.tensor(labels[i]).to(self.device)
-                values.append(
-                    self.get_values(iou_threshold=iou_threshold, proposals=proposals_, labels=labels_, fps=25.0)
-                )
-                self.n_labels += labels_.shape[0]
-
-            # sort proposals
-            values = torch.cat(values)
-            ind = values[:, 0].sort(stable=True, descending=True).indices
-            values = values[ind]
-
-            # accumulate to calculate precision and recall
+            hits = (ious > iou_threshold) & label_valid[:, None, :]
+            is_tp = _first_unused_hits(hits).reshape(-1)[order]
+            values = torch.column_stack([confidence, is_tp])
             curve = self.calculate_curve(values)
-            ap = self.calculate_ap(curve)
-            self.ap[iou_threshold] = ap.item()
-
+            self.ap[iou_threshold] = self.calculate_ap(curve).item()
         return self.ap
 
     def calculate_curve(self, values):
@@ -158,24 +196,29 @@ class AR:
         self.ar: dict = {}
 
     def __call__(self, proposals, labels) -> dict:
-        # shape: (n_metadata, n_iou_thresholds, n_proposal_thresholds, 2)
+        label_rows, label_valid, _ = _label_batch(labels, proposals.shape[0], self.device)
+        limit = int(self.n_proposals_list.max())
+        ranked = proposals[:, :limit]
+        if label_rows.shape[1] == 0:
+            ious = ranked.new_zeros((ranked.shape[0], ranked.shape[1], 0))
+        else:
+            ious = _interval_iou_batch(ranked[:, :, 1:] / 25.0, label_rows)
+        selected = (self.n_proposals_list - 1).to(ious.device)
+        best = ious.cummax(1).values[:, selected, :]
+        thresholds = torch.tensor(self.iou_thresholds, device=best.device)[:, None, None]
+        hits = best.unsqueeze(1) > thresholds
+        hits = hits & label_valid[:, None, None, :].to(hits.device)
+        true_positives = hits.sum(dim=-1)
+        per_video = label_valid.sum(dim=1).to(device=true_positives.device, dtype=true_positives.dtype)
+        false_negatives = per_video[:, None, None] - true_positives
+        # Totals stay on CPU, including when the score tensor is on CUDA.
         values = torch.zeros((len(proposals), len(self.iou_thresholds), len(self.n_proposals_list), 2))
-
-        i = 0
-        for i in range(proposals.shape[0]):
-            proposals_ = proposals[i]
-            labels_ = torch.tensor(labels[i]).to(self.device)
-            values[i] = self.get_values(self.iou_thresholds, proposals_, labels_, 25.0)
-            i += 1
-
-        values_sum = values.sum(dim=0)
-
-        TP = values_sum[:, :, 0]
-        FN = values_sum[:, :, 1]
-        recall = TP / (TP + FN)  # (n_iou_thresholds, n_proposal_thresholds)
-        for i, n_proposals in enumerate(self.n_proposals_list):
-            self.ar[n_proposals.item()] = recall[:, i].mean().item()
-
+        values[..., 0] = true_positives
+        values[..., 1] = false_negatives
+        totals = values.sum(dim=0)
+        recall = totals[:, :, 0] / (totals[:, :, 0] + totals[:, :, 1])
+        for index, count in enumerate(self.n_proposals_list):
+            self.ar[count.item()] = recall[:, index].mean().item()
         return self.ar
 
     def get_values(
