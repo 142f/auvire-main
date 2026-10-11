@@ -11,6 +11,7 @@ def seed_worker(worker_id):
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+    torch.set_num_threads(1)  # one thread per worker; the main process keeps 4
 
 
 def collate_fn(batch):

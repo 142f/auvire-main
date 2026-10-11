@@ -936,12 +936,24 @@ class Model(nn.Module):
         return x[0].permute((0, 2, 1)), x[1].permute((0, 2, 1))
 
     def get_reconstruction_pairs(self, audio, video):
-        # Each modality keeps its own forward. Sharing the repeated audio
-        # reconstruction changed validation AP outside the baseline tolerance.
-        reconstructed = [
-            self.reconstruction_model(audio) if modality["input"] == "audio" else self.reconstruction_model(video)
-            for modality in self.reconstruction_modality
-        ]
+        # Each modality keeps its own forward during training: sharing the
+        # repeated audio reconstruction changes dropout RNG consumption and the
+        # backward accumulation order, moving validation AP outside the
+        # baseline tolerance. Evaluation is deterministic, so there the
+        # repeated forward is shared and the result stays bit for bit equal.
+        if self.training:
+            reconstructed = [
+                self.reconstruction_model(audio) if modality["input"] == "audio" else self.reconstruction_model(video)
+                for modality in self.reconstruction_modality
+            ]
+        else:
+            cache = {}
+            reconstructed = []
+            for modality in self.reconstruction_modality:
+                key = modality["input"]
+                if key not in cache:
+                    cache[key] = self.reconstruction_model(audio if key == "audio" else video)
+                reconstructed.append(cache[key])
         pairs = [
             (
                 {"target": audio, "prediction": reconstructed_}
