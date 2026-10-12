@@ -396,6 +396,12 @@ def main(argv):
         )
     if args.print_deltas:
         sys.stdout.write(delta_report(pasted, blocks))
+        for item in others:
+            sys.stdout.write(
+                "other_config_higher path=%s index=%d tap@0.95=%r\n"
+                % (item["path"], item["index"], item["tap@0.95"])
+            )
+        sys.stdout.write("other_config_higher_count=%d\n" % len(others))
     return 0
 
 

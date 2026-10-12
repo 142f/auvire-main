@@ -102,6 +102,34 @@ def test_report_carries_source_numbers_and_does_not_assign_the_gain():
         assert item["tap@0.95"] > pasted["values"]["tap@0.95"]
 
 
+def test_every_higher_lavdf_full_test_is_in_the_report():
+    text, pasted, facts, blocks, refinement = _loaded()
+    threshold = pasted["values"]["tap@0.95"]
+    excluded = {
+        (ROOT / compare.ABLATION_REL).resolve(),
+        (ROOT / compare.GRID_REL).resolve(),
+        (ROOT / compare.TASK_REL).resolve(),
+    }
+    expected = []
+    for path in sorted((ROOT / "results").rglob("*.json")):
+        if "lavdf" not in path.name.lower():
+            continue
+        data = json.loads(path.read_text(encoding="utf-8"))
+        tests = []
+        compare._walk_tests(data, tests)
+        for index, block in enumerate(tests):
+            if block["tap@0.95"] > threshold and path.resolve() not in excluded:
+                expected.append((path.relative_to(ROOT).as_posix(), index, block["tap@0.95"]))
+    others = compare.other_higher_lavdf_tests(ROOT, threshold)
+    assert [(item["path"], item["index"], item["tap@0.95"]) for item in others] == expected
+    assert expected
+    report = compare.render(pasted, facts, blocks, refinement, others)
+    for path, index, value in expected:
+        assert path in report
+        assert repr(value) in report
+        assert "results[%d].test" % index in report
+
+
 def test_cli_reads_the_json_files(tmp_path):
     comparison = tmp_path / "comparison.md"
     completed = subprocess.run(
