@@ -179,6 +179,52 @@ def task_block(blocks):
     return next(block for block in blocks if block["source"] == "task_tfl")
 
 
+def _walk_tests(obj, found):
+    if isinstance(obj, dict):
+        test = obj.get("test")
+        if isinstance(test, dict) and "tap@0.95" in test:
+            found.append(test)
+        for value in obj.values():
+            _walk_tests(value, found)
+    elif isinstance(obj, list):
+        for value in obj:
+            _walk_tests(value, found)
+
+
+def other_higher_lavdf_tests(root, threshold):
+    """LAV-DF full-test blocks outside the three same-config records."""
+    root = Path(root)
+    excluded = {
+        (root / ABLATION_REL).resolve(),
+        (root / GRID_REL).resolve(),
+        (root / TASK_REL).resolve(),
+    }
+    found = []
+    results = root / "results"
+    if not results.is_dir():
+        return found
+    for path in sorted(results.rglob("*.json")):
+        name = path.name.lower()
+        if "lavdf" not in name or "avdeepfake" in name:
+            continue
+        if path.resolve() in excluded:
+            continue
+        data = json.loads(path.read_text(encoding="utf-8"))
+        tests = []
+        _walk_tests(data, tests)
+        for index, block in enumerate(tests):
+            value = block["tap@0.95"]
+            if value > threshold:
+                found.append(
+                    {
+                        "path": path.relative_to(root).as_posix(),
+                        "index": index,
+                        "tap@0.95": value,
+                    }
+                )
+    return found
+
+
 def _sign(value):
     if value > 0:
         return "positive"
@@ -198,7 +244,7 @@ def _metric_sentence(name, delta):
     return lines
 
 
-def render(pasted, facts, blocks, refinement):
+def render(pasted, facts, blocks, refinement, others):
     task = task_block(blocks)
     best_grid = grid_max_block(blocks)
     task_delta = deltas_for(pasted, task)
@@ -237,6 +283,10 @@ def render(pasted, facts, blocks, refinement):
             "写到了" if refinement["train_mentions_refinement"] else "没有写",
         ),
         "This comparison does not attribute the tap@0.95 difference to LHB-CR or any other innovation.",
+        "更高和最接近只限于这三份同一配置记录：%s、%s、%s 的 lavdf/lavdf。"
+        % (ABLATION_REL, GRID_REL, TASK_REL),
+        "在这三份同一配置记录里，这次的 tap@0.95 高于其中每一个 test。最接近的是 task_tfl lavdf/lavdf，以及该 grid 文件里 tap@0.95 约为 46.50 的 test。",
+        "这次的 tap@0.95 并不是仓库里每一份已保存 LAV-DF 全量测试的最高分。",
         "",
         "## 这次测试",
         "",
@@ -255,7 +305,7 @@ def render(pasted, facts, blocks, refinement):
         for key in COMPARE_KEYS:
             lines.append("- %s delta=%r sign=%s" % (key, delta[key], _sign(delta[key])))
         lines.append("")
-    lines.append("## 与最接近的两份全量测试")
+    lines.append("## 在这三份同一配置记录里最接近的两份")
     lines.append("")
     lines.extend(_metric_sentence(task["label"], task_delta))
     lines.append(
@@ -267,11 +317,19 @@ def render(pasted, facts, blocks, refinement):
         "相对 %s（该 grid 测试块的 tap@0.95 为 %r，约为 46.50），tap@0.5 与 tap@0.75 的绝对差值都小于 0.05，tap@0.95 的差值约为 3.3（精确值 %r）。"
         % (best_grid["label"], best_grid["values"]["tap@0.95"], grid_delta["tap@0.95"])
     )
-    lines.append("这次的 tap@0.95 高于下面每一份已保存测试：")
+    lines.append("在这三份同一配置记录里，这次的 tap@0.95 高于其中每一个 test：")
     for block in blocks:
         lines.append(
             "- %s stored tap@0.95=%r delta=%r"
             % (block["label"], block["values"]["tap@0.95"], pasted["values"]["tap@0.95"] - block["values"]["tap@0.95"])
+        )
+    lines.append("其他配置的 LAV-DF 全量 test 里，tap@0.95 高于这次的有：")
+    if not others:
+        lines.append("- 无")
+    for item in others:
+        lines.append(
+            "- %s results[%d].test tap@0.95=%r，高于这次，不计入上面的更高和最接近。"
+            % (item["path"], item["index"], item["tap@0.95"])
         )
     lines.append("召回只在对应差值为正时更高。上面每个 tar 差值都带了符号，这里不把召回概括成提高。")
     lines.append(
@@ -329,9 +387,10 @@ def main(argv):
     args = parser.parse_args(argv)
     log_text = Path(args.log).read_text(encoding="utf-8")
     pasted, facts, blocks, refinement = build(args.root, log_text)
+    others = other_higher_lavdf_tests(args.root, pasted["values"]["tap@0.95"])
     if args.write_comparison:
         Path(args.write_comparison).write_text(
-            render(pasted, facts, blocks, refinement),
+            render(pasted, facts, blocks, refinement, others),
             encoding="utf-8",
             newline="\n",
         )

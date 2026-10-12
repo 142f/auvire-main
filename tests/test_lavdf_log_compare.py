@@ -73,7 +73,8 @@ def test_log_facts_and_refinement_gate():
 
 def test_report_carries_source_numbers_and_does_not_assign_the_gain():
     text, pasted, facts, blocks, refinement = _loaded()
-    report = compare.render(pasted, facts, blocks, refinement)
+    others = compare.other_higher_lavdf_tests(ROOT, pasted["values"]["tap@0.95"])
+    report = compare.render(pasted, facts, blocks, refinement, others)
     assert pasted["raw"] in report
     for block in blocks:
         assert block["raw"].strip() in report
@@ -88,6 +89,17 @@ def test_report_carries_source_numbers_and_does_not_assign_the_gain():
     assert repr(task_delta["tap@0.95"]) in report
     assert repr(grid_delta["tap@0.95"]) in report
     assert "sign=%s" % ("positive" if task_delta["tap@0.5"] > 0 else "negative") in report
+    assert "更高和最接近只限于这三份同一配置记录" in report
+    assert "并不是仓库里每一份已保存 LAV-DF 全量测试的最高分" in report
+    assert others
+    for item in others:
+        assert ("%r" % item["tap@0.95"]) in report
+        assert item["path"] in report
+        loaded = json.loads((ROOT / item["path"]).read_text(encoding="utf-8"))
+        tests = []
+        compare._walk_tests(loaded, tests)
+        assert tests[item["index"]]["tap@0.95"] == item["tap@0.95"]
+        assert item["tap@0.95"] > pasted["values"]["tap@0.95"]
 
 
 def test_cli_reads_the_json_files(tmp_path):
