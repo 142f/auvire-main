@@ -1,0 +1,3 @@
+cd /3240608030/auvire-main
+export PYTHONPATH="/3240608030/auvire-main"
+python scripts/train.py -d lavdf
