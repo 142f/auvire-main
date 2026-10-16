@@ -54,12 +54,19 @@ def _lavdf_metadata_key(root, metadata):
     raise KeyError(candidates[0] if candidates else root)
 
 
+def _frame_index(seconds):
+    # int(9.2 * 25) is 229: the product is 229.99999999999997. 1e-6 frame is
+    # below one millisecond (0.025 frame), so a timestamp inside a frame stays
+    # on the same lower frame as the original truncation.
+    return int(float(seconds) * 25.0 + 1e-6)
+
+
 def period2target(fake_periods, max_length):
     """Convert temporal fake periods to the shared localization target format."""
     tfl_target = torch.zeros((max_length, 3))
     for fake_period in fake_periods:
-        start = int(fake_period[0] * 25)
-        end = int(fake_period[1] * 25)
+        start = _frame_index(fake_period[0])
+        end = _frame_index(fake_period[1])
         # Out-of-range periods keep the original index fill, including its error.
         if start < 0 or end >= max_length:
             tfl_target[start : end + 1, 0] = 1
