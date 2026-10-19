@@ -61,8 +61,53 @@ def _frame_index(seconds):
     return int(float(seconds) * 25.0 + 1e-6)
 
 
+def _label_mode():
+    """训练标签的边界口径，由 ``AUVIRE_LABEL_MODE`` 选择（默认 ``baseline``）。
+
+    ``baseline``：既有实现，两条边界都向下截断到整数帧；评测把预测边界按 ``frame/25``
+    还原成秒，于是标签告诉模型的边界恒比真实秒边界早 ``frac(seconds*25)/25``（最多 1 帧）。
+    ``continuous``：边界用连续帧坐标（``seconds * 25``，与评测 ``frame/25`` 同一时间轴），
+    偏移可以精确等于真实边界。默认关闭时与既有基线逐位一致。
+    """
+    value = os.environ.get("AUVIRE_LABEL_MODE", "").strip().lower()
+    return "continuous" if value in {"continuous", "cont", "c"} else "baseline"
+
+
+def _period2target_continuous(fake_periods, max_length):
+    """连续边界版（``AUVIRE_LABEL_MODE=continuous``）。
+
+    帧号 f 对应时刻 f/25，故段 ``[s, e]`` 在帧坐标上是 ``[s*25, e*25]``。掩码取完整落在
+    段内的帧（``ceil(s*25)`` … ``floor(e*25)``），使左右偏移都非负——``ctr_diou_loss_1d``
+    有 ``(target_offsets >= 0.0).all()`` 断言。
+    """
+    tfl_target = torch.zeros((max_length, 3))
+    for fake_period in fake_periods:
+        start_f = float(fake_period[0]) * 25.0
+        end_f = float(fake_period[1]) * 25.0
+        start = int(np.ceil(start_f - 1e-6))
+        end = int(np.floor(end_f + 1e-6))
+        if end < start:
+            continue
+        if start < 0 or end >= max_length:
+            # 本地 LAV-DF 片段最长 495 帧，不会走到这里；保留与 baseline 相同的填充语义，
+            # 但把写入范围夹回 [0, max_length-1]，不做负索引写入。
+            start = max(start, 0)
+            end = min(end, max_length - 1)
+            if end < start:
+                continue
+        tfl_target[start : end + 1, 0] = 1
+        offsets = torch.arange(end - start + 1, dtype=tfl_target.dtype)
+        # clamp 只为吸收 start_f/end_f 的 float64 取自整数时的 1e-13 级误差
+        # （例如 4.68*25 = 117.00000000000001），量级低于 1e-9 帧。
+        tfl_target[start : end + 1, 1] = torch.clamp(offsets - (start_f - start), min=0.0)
+        tfl_target[start : end + 1, 2] = torch.clamp((end_f - start) - offsets, min=0.0)
+    return tfl_target
+
+
 def period2target(fake_periods, max_length):
     """Convert temporal fake periods to the shared localization target format."""
+    if _label_mode() == "continuous":
+        return _period2target_continuous(fake_periods, max_length)
     tfl_target = torch.zeros((max_length, 3))
     for fake_period in fake_periods:
         start = _frame_index(fake_period[0])

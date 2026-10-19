@@ -25,6 +25,10 @@ def main():
         cfg["epochs"] = int(os.environ["AUVIRE_EPOCHS"])
     if os.environ.get("AUVIRE_WORKERS"):
         cfg["dataloader"]["workers"] = int(os.environ["AUVIRE_WORKERS"])
+    if os.environ.get("AUVIRE_KEEP_CKPT"):
+        # Measurement-only override: keep the .pth after training so the arm can be
+        # re-inspected offline. Does not change any training numerics.
+        cfg["delete_ckpt"] = False
     folder = os.environ.get("AUVIRE_FOLDER", "ckpt")
     e = Experiment(cfg=cfg, folder=folder, print_config=False, job_info=False)
     if os.environ.get("AUVIRE_PERF") == "1":
