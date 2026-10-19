@@ -116,9 +116,51 @@ def _time_validation(evaluation, clock):
         eval_module.AR = original_ar
 
 
+def _pca_diag(model):
+    """``AUVIRE_PCA_DIAG=1`` 时打印 PCA-FPN 门控标量与尺度嵌入的统计。
+
+    只读，不改变任何数值。用于判断闸门实验里"门控 scale 是否学会大于 0""尺度嵌入是否
+    真的被训练起来"——这是区分"模块仍为 no-op"与"模块生效但无收益"的关键证据。
+    """
+    pyramid = getattr(getattr(getattr(model, "encoder_model", None), "model", None), "pca_pyramid", None)
+    if pyramid is None:
+        return
+    for index, block in enumerate(pyramid.blocks):
+        print(f"[pca_diag] blocks[{index}].scale = {float(block.scale.detach().cpu()):.6f}")
+    level_embed = getattr(pyramid, "level_embed", None)
+    if level_embed is not None:
+        data = level_embed.detach().cpu()
+        print(
+            f"[pca_diag] level_embed shape={tuple(data.shape)} "
+            f"abs_mean={float(data.abs().mean()):.6f} "
+            f"abs_max={float(data.abs().max()):.6f} "
+            f"per_level_abs_mean={[round(float(v), 6) for v in data.abs().mean(dim=1)]}"
+        )
+
+
 os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
 # Host cpu_count is 128; this container can run 4 threads.
 torch.set_num_threads(4)
+
+
+def pca_pool_tag():
+    """PCA-FPN 候选集范围的实验名后缀：默认（全部级）不加后缀，相邻级加 "adj"。
+
+    用于把 AUVIRE_PCA_POOL=adjacent 的消融对照与默认配置的产物（结果 json、checkpoint
+    目录名）区分开，避免第二条臂被 check_complete 判定为"已完成"而跳过训练。
+    """
+    value = os.environ.get("AUVIRE_PCA_POOL", "").strip().lower()
+    return ["adj"] if value in {"adjacent", "adj"} else []
+
+
+def pca_pos_tag():
+    """PCA-FPN 位置/尺度先验的实验名后缀（``AUVIRE_PCA_POS``）。
+
+    用于把 none/scale/time/both 四条臂的产物（结果 json、checkpoint 目录名）区分开，
+    避免不同臂共用同一文件名而被 check_complete 判定为"已完成"而跳过训练。
+    """
+    value = os.environ.get("AUVIRE_PCA_POS", "").strip().lower()
+    return list({"scale": ["pe_s"], "time": ["pe_t"], "both": ["pe_st"]}.get(value, []))
 
 
 def get_filename(cfg):
@@ -161,7 +203,12 @@ def get_filename(cfg):
                 ),
                 "c",
                 "_".join(cfg["criterion"]["composition"]),
-            ],
+            ] + (
+                ["pcapfn"] + pca_pool_tag() + pca_pos_tag()
+                if bool(cfg["model"]["encoder"].get("pca_fpn", False))
+                or os.environ.get("AUVIRE_PCA_FPN", "").strip().lower() in {"1", "true", "yes"}
+                else []
+            ),
         )
     )
 
@@ -762,6 +809,8 @@ class Experiment:
         self._write(f"Loading best checkpoint from epoch {best_epoch + 1}; starting test...")
         checkpoint = torch.load(self.ckpt_path, weights_only=False)
         self.model.load_state_dict(checkpoint["model"])
+        if os.environ.get("AUVIRE_PCA_DIAG", "").strip().lower() in {"1", "true", "yes"}:
+            _pca_diag(self.model)
         e = Evaluation(
             model=self.model,
             loader=self.loaders["test"],
