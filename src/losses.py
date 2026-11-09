@@ -88,7 +88,7 @@ class BCELoss(nn.Module):
 class CombinedLoss(nn.Module):
 
     def __init__(self, alpha, gamma, composition, factor, quality_beta=2.0, quality_weight=0.5,
-                 rank_weight=0.5, rank_margin=0.5):
+                 rank_weight=0.5, rank_margin=0.5, quality_floor=0.0, quality_alpha=0.5):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -102,6 +102,14 @@ class CombinedLoss(nn.Module):
         # MAQS-R (backup arm): hard-pair ranking term on the quality logits.
         self.l_rank = float(rank_weight) if "rank" in composition else 0.0
         self.rank_margin = float(rank_margin)
+        # Optional target remap: concentrate the quality regression on the high-IoU
+        # band that AP@0.95 actually measures (0.0 keeps the plain IoU target).
+        self.quality_floor = float(quality_floor)
+        # The quality branch must be *calibrated* over the whole timeline, so its
+        # focal imbalance weight is symmetric by default (the 0.98 used for the
+        # positive-starved classification task would stop it from learning to
+        # suppress the spurious boxes that dominate the high-recall ranks).
+        self.quality_alpha = float(quality_alpha)
         self.factor = factor
         self.bce = BCELoss()
 
@@ -147,7 +155,10 @@ class CombinedLoss(nn.Module):
             intersection = torch.minimum(pred_left, gt_left) + torch.minimum(pred_right, gt_right)
             union = torch.maximum(pred_left, gt_left) + torch.maximum(pred_right, gt_right)
             iou = intersection / union.clamp(min=1e-8)
-        loss = torchvision.ops.sigmoid_focal_loss(logits, iou, self.alpha, self.gamma, "none")
+            if self.quality_floor > 0.0:
+                floor = self.quality_floor
+                iou = ((iou - floor) / (1.0 - floor)).clamp(min=0.0, max=1.0)
+        loss = torchvision.ops.sigmoid_focal_loss(logits, iou, self.quality_alpha, self.gamma, "none")
         weight = (iou - torch.sigmoid(logits)).abs().pow(self.quality_beta)
         return weight * loss
 

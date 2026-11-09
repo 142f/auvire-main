@@ -35,13 +35,14 @@ DEFAULT_LAVDF = {
         # MAQS (metric-aligned quality scoring): a third scoring pathway whose
         # soft target is the interval IoU the evaluator itself uses. Set to
         # {"enabled": False} -- or AUVIRE_QUALITY=0 -- for the baseline arm.
-        "quality": {"enabled": True},
+        "quality": {"enabled": True, "readout": True, "use_offsets": True},
     },
     "criterion": {
         "composition": ["focal", "diou", "rec", "quality"],
         "params": {"alpha": 0.98, "gamma": 2, "quality_beta": 2.0, "quality_weight": 0.5,
-                   "rank_weight": 0.5, "rank_margin": 0.5},
+                   "quality_alpha": 0.5, "rank_weight": 0.5, "rank_margin": 0.5},
     },
+    "freeze_backbone": False,
     "optimization": {
         "lr": 0.001,
         "scheduler": {"name": "reduceonplateau", "params": {"patience": 7, "factor": 0.1, "min_lr": 0}},
@@ -70,13 +71,14 @@ DEFAULT_AVDEEPFAKE1M = {
         "encoder": {"nlayers": {"retain": 1, "downsample": 1}, "fpn": True},
         "conv": {"use_ln": True, "use_rl": True, "use_do": False},
         "dropout": {"main": 0.1, "head": 0.5},
-        "quality": {"enabled": True},
+        "quality": {"enabled": True, "readout": True, "use_offsets": True},
     },
     "criterion": {
         "composition": ["focal", "diou", "rec", "quality"],
         "params": {"alpha": 0.98, "gamma": 2, "quality_beta": 2.0, "quality_weight": 0.5,
                    "rank_weight": 0.5, "rank_margin": 0.5},
     },
+    "freeze_backbone": False,
     "optimization": {
         "lr": 0.001,
         "scheduler": {"name": "reduceonplateau", "params": {"patience": 7, "factor": 0.1, "min_lr": 0}},

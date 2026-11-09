@@ -755,11 +755,12 @@ class EncoderModel(nn.Module):
 
 class HeadModule(nn.Module):
 
-    def __init__(self, d_model, output_size, timesteps, use_ln, use_rl, use_do, dropout, final_relu):
+    def __init__(self, d_model, output_size, timesteps, use_ln, use_rl, use_do, dropout, final_relu, in_channels=None):
         super().__init__()
+        in_channels = d_model if in_channels is None else in_channels
         submodules = [
             ConvBlock(
-                in_channels=d_model,
+                in_channels=in_channels,
                 out_channels=d_model,
                 kernel_size=3,
                 stride=1,
@@ -799,7 +800,8 @@ class HeadModule(nn.Module):
 
 class HeadModel(nn.Module):
 
-    def __init__(self, d_model, factor, output_size, max_length, fpn, use_ln, use_rl, use_do, dropout, final_relu):
+    def __init__(self, d_model, factor, output_size, max_length, fpn, use_ln, use_rl, use_do, dropout, final_relu,
+                 in_channels=None):
         super().__init__()
         self.fpn = fpn
         if self.fpn:
@@ -814,6 +816,7 @@ class HeadModel(nn.Module):
                         use_do=use_do,
                         dropout=dropout,
                         final_relu=final_relu,
+                        in_channels=in_channels,
                     )
                     for f in factor
                 ]
@@ -830,6 +833,7 @@ class HeadModel(nn.Module):
                         use_do=use_do,
                         dropout=dropout,
                         final_relu=final_relu,
+                        in_channels=in_channels,
                     )
                 ]
             )
@@ -938,7 +942,17 @@ class Model(nn.Module):
         # quality disabled the parameter init order -- and therefore the seeded
         # initialisation -- is bit for bit the baseline.
         self.quality = None
-        self.quality_enabled = bool((quality or {}).get("enabled", False))
+        quality_cfg = quality or {}
+        self.quality_enabled = bool(quality_cfg.get("enabled", False))
+        # Read-out mode: the quality branch sees the encoder features detached, so
+        # its supervision can never perturb the localizer it is supposed to score.
+        # The classification / regression trajectory then stays bit for bit the
+        # baseline's, which is what makes "same model, better score" testable.
+        self.quality_readout = bool(quality_cfg.get("readout", True))
+        # Box-aware scoring: the quality head also sees the interval the regressor
+        # would emit at this position, so it can learn "this box is wider than the
+        # support I see" instead of having to infer the offsets from features.
+        self.quality_use_offsets = bool(quality_cfg.get("use_offsets", True))
         if self.quality_enabled:
             self.quality = HeadModel(
                 d_model=self.d_model,
@@ -951,6 +965,7 @@ class Model(nn.Module):
                 use_do=self.use_do,
                 dropout=self.dropout_head,
                 final_relu=False,
+                in_channels=self.d_model + (2 if self.quality_use_offsets else 0),
             )
 
     def get_model_inputs(self, x):
@@ -1028,7 +1043,15 @@ class Model(nn.Module):
         logits = self.classification(features)
         boundaries = self.regression(features)
         if self.quality_enabled:
-            qualities = self.quality(features)
+            quality_input = []
+            for feature, boundary in zip(features, boundaries):
+                item = feature.detach() if self.quality_readout else feature
+                if self.quality_use_offsets:
+                    # boundary is [B, 2, T]; keep it detached so the score branch
+                    # cannot move the regressor it is scoring.
+                    item = torch.cat((item, boundary.detach()), dim=1)
+                quality_input.append(item)
+            qualities = self.quality(quality_input)
             outputs = [
                 torch.cat((l, b, q), dim=1).permute((0, 2, 1))
                 for l, b, q in zip(logits, boundaries, qualities)

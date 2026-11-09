@@ -49,6 +49,12 @@ def main():
     if os.environ.get("AUVIRE_INIT_CKPT"):
         # Warm start from an existing checkpoint (post-hoc arms only).
         cfg["init_checkpoint"] = os.environ["AUVIRE_INIT_CKPT"]
+    if os.environ.get("AUVIRE_FREEZE_BACKBONE"):
+        cfg["freeze_backbone"] = os.environ["AUVIRE_FREEZE_BACKBONE"].strip().lower() in {"1", "true", "yes", "on"}
+    if os.environ.get("AUVIRE_READOUT"):
+        cfg["model"].setdefault("quality", {})["readout"] = os.environ["AUVIRE_READOUT"].strip().lower() in {"1", "true", "yes", "on"}
+    if os.environ.get("AUVIRE_Q_FLOOR"):
+        cfg["criterion"]["params"]["quality_floor"] = float(os.environ["AUVIRE_Q_FLOOR"])
     if os.environ.get("AUVIRE_LR"):
         cfg["optimization"]["lr"] = float(os.environ["AUVIRE_LR"])
     if os.environ.get("AUVIRE_KEEP_CKPT"):

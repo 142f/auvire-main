@@ -339,6 +339,17 @@ class Experiment:
         if unexpected:
             raise RuntimeError(f"warm start mismatch: {unexpected}")
 
+    def _freeze_for_readout(self):
+        """Freeze everything but the quality branch (read-out arm)."""
+        if not self.cfg.get("freeze_backbone"):
+            return
+        trainable = []
+        for name, parameter in self.model.named_parameters():
+            parameter.requires_grad = name.startswith("quality.")
+            if parameter.requires_grad:
+                trainable.append(name)
+        print(f"[freeze] trainable tensors: {len(trainable)} (quality branch only)")
+
     def get_criterion(self):
         return CombinedLoss(
             alpha=self.alpha,
@@ -349,6 +360,8 @@ class Experiment:
             quality_weight=self.criterion_params.get("quality_weight", 0.5),
             rank_weight=self.criterion_params.get("rank_weight", 0.5),
             rank_margin=self.criterion_params.get("rank_margin", 0.5),
+            quality_floor=self.criterion_params.get("quality_floor", 0.0),
+            quality_alpha=self.criterion_params.get("quality_alpha", 0.5),
         )
 
     def get_scheduler(self, name, optimizer):
@@ -840,6 +853,7 @@ class Experiment:
                     self.model = self.get_model()
                     self.model.to(self.device)
                     self._load_initial_weights()
+                    self._freeze_for_readout()
                     self.optimizer = self.get_optimizer(self.optimizer_name)
                     self.scheduler_dict = {
                         "name": self.scheduler_name,
