@@ -25,6 +25,16 @@ def main():
         cfg["epochs"] = int(os.environ["AUVIRE_EPOCHS"])
     if os.environ.get("AUVIRE_WORKERS"):
         cfg["dataloader"]["workers"] = int(os.environ["AUVIRE_WORKERS"])
+    if os.environ.get("AUVIRE_QUALITY") is not None:
+        # Arm selector (single variable): 0 = baseline, 1 = MAQS. Both the head
+        # and its loss term are switched together so the two arms differ by
+        # exactly one mechanism.
+        quality_on = os.environ["AUVIRE_QUALITY"].strip().lower() in {"1", "true", "yes", "on"}
+        cfg["model"].setdefault("quality", {})["enabled"] = quality_on
+        composition = [item for item in cfg["criterion"]["composition"] if item != "quality"]
+        if quality_on:
+            composition.append("quality")
+        cfg["criterion"]["composition"] = composition
     if os.environ.get("AUVIRE_KEEP_CKPT"):
         # Measurement-only override: keep the .pth after training so the arm can be
         # re-inspected offline. Does not change any training numerics.

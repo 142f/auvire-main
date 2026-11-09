@@ -87,7 +87,7 @@ class BCELoss(nn.Module):
 
 class CombinedLoss(nn.Module):
 
-    def __init__(self, alpha, gamma, composition, factor):
+    def __init__(self, alpha, gamma, composition, factor, quality_beta=2.0, quality_weight=0.5):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -96,11 +96,13 @@ class CombinedLoss(nn.Module):
         self.l_sl1 = 1.0 if "sl1" in composition else 0.0
         self.l_rec = 1.0 if "rec" in composition else 0.0
         self.l_det = 1.0 if "det" in composition else 0.0
+        self.l_quality = float(quality_weight) if "quality" in composition else 0.0
+        self.quality_beta = float(quality_beta)
         self.factor = factor
         self.bce = BCELoss()
 
     def smooth_l1(self, inputs, targets):
-        loss = torch.nn.functional.smooth_l1_loss(inputs[:, :, 1:] / 25, targets[:, :, 1:] / 25, reduction="none")
+        loss = torch.nn.functional.smooth_l1_loss(inputs[:, :, 1:3] / 25, targets[:, :, 1:] / 25, reduction="none")
         loss = loss.mean(dim=-1)
         loss = targets[:, :, 0] * loss
         return loss
@@ -117,12 +119,43 @@ class CombinedLoss(nn.Module):
 
     def diou(self, inputs, targets):
         loss = ctr_diou_loss_1d(
-            input_offsets=inputs[:, :, 1:].reshape((-1, 2)),
+            input_offsets=inputs[:, :, 1:3].reshape((-1, 2)),
             target_offsets=targets[:, :, 1:].view(-1, 2),
             reduction="none",
         ).view(inputs.shape[0], inputs.shape[1])
         loss = targets[:, :, 0] * loss
         return loss
+
+    def quality(self, inputs, targets):
+        """Quality Focal Loss on the third scoring pathway (MAQS).
+
+        The target is the IoU between the interval this centre would emit with
+        the *current* offsets and the ground-truth interval. It is computed on
+        the prediction detached, so the branch learns to predict the localization
+        quality of the regressor rather than to move the regressor. Positives and
+        negatives are handled uniformly: a frame outside every fake period has
+        zero target offsets, and its IoU collapses to 0.
+        """
+        logits = inputs[:, :, 3]
+        with torch.no_grad():
+            pred_left, pred_right = inputs[:, :, 1].detach(), inputs[:, :, 2].detach()
+            gt_left, gt_right = targets[:, :, 1], targets[:, :, 2]
+            intersection = torch.minimum(pred_left, gt_left) + torch.minimum(pred_right, gt_right)
+            union = torch.maximum(pred_left, gt_left) + torch.maximum(pred_right, gt_right)
+            iou = intersection / union.clamp(min=1e-8)
+        loss = torchvision.ops.sigmoid_focal_loss(logits, iou, self.alpha, self.gamma, "none")
+        weight = (iou - torch.sigmoid(logits)).abs().pow(self.quality_beta)
+        return weight * loss
+
+    def quality_loss(self, inputs, targets):
+        return torch.stack(
+            [
+                self.quality(input_, targets[:, :: self.factor[i], :]).sum(dim=-1)
+                / self.num_positives(targets[:, :: self.factor[i], :])
+                for i, input_ in enumerate(inputs)
+            ],
+            dim=-1,
+        ).mean(dim=-1)
 
     def num_positives(self, targets):
         den = targets[:, :, 0].sum(dim=-1)
@@ -160,7 +193,14 @@ class CombinedLoss(nn.Module):
 
     def forward(self, inputs, targets, errors):
         loss_loc = self.localization_loss(inputs, targets)
+        use_quality = self.l_quality and inputs[0].shape[-1] > 3
+        loss_quality = self.quality_loss(inputs, targets) if use_quality else None
         loss_det = self.detection_loss(inputs, targets)
         loss_rec = self.reconstruction_loss(errors, targets)
+        # The historical normalisation is kept untouched so that the quality term
+        # does not silently re-weight the localization / reconstruction terms;
+        # it enters as an additive term with its own weight instead.
         loss = (loss_loc + self.l_det * loss_det + self.l_rec * loss_rec) / (1 + self.l_det + self.l_rec)
+        if loss_quality is not None:
+            loss = loss + self.l_quality * loss_quality
         return loss.mean()

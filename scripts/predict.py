@@ -126,6 +126,7 @@ model = Model(
     model_type=configuration["model"]["type"],
     factor=factor,
     device=device,
+    quality=configuration["model"].get("quality"),
 )
 model.to(device)
 checkpoint = torch.load(model_ckpt_file)

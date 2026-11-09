@@ -856,6 +856,7 @@ class Model(nn.Module):
         model_type,
         factor,
         device,
+        quality=None,
     ):
         super().__init__()
         self.device = device
@@ -931,6 +932,26 @@ class Model(nn.Module):
             dropout=self.dropout_head,
             final_relu=True,
         )
+        # MAQS: a third scoring pathway that predicts the localization quality
+        # (expected IoU of this center's interval against the ground truth)
+        # instead of the frame authenticity. Constructed last so that with
+        # quality disabled the parameter init order -- and therefore the seeded
+        # initialisation -- is bit for bit the baseline.
+        self.quality = None
+        self.quality_enabled = bool((quality or {}).get("enabled", False))
+        if self.quality_enabled:
+            self.quality = HeadModel(
+                d_model=self.d_model,
+                factor=self.factor,
+                output_size=1,
+                max_length=self.max_length,
+                fpn=self.fpn,
+                use_ln=self.use_ln,
+                use_rl=self.use_rl,
+                use_do=self.use_do,
+                dropout=self.dropout_head,
+                final_relu=False,
+            )
 
     def get_model_inputs(self, x):
         return x[0].permute((0, 2, 1)), x[1].permute((0, 2, 1))
@@ -1006,7 +1027,14 @@ class Model(nn.Module):
         # Outputs
         logits = self.classification(features)
         boundaries = self.regression(features)
-        outputs = [torch.cat((l, b), dim=1).permute((0, 2, 1)) for l, b in zip(logits, boundaries)]
+        if self.quality_enabled:
+            qualities = self.quality(features)
+            outputs = [
+                torch.cat((l, b, q), dim=1).permute((0, 2, 1))
+                for l, b, q in zip(logits, boundaries, qualities)
+            ]
+        else:
+            outputs = [torch.cat((l, b), dim=1).permute((0, 2, 1)) for l, b in zip(logits, boundaries)]
         return outputs, dissimilarity, features
 
     def forward(self, src):

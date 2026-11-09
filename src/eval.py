@@ -297,7 +297,22 @@ class Evaluation:
                 score_scale = torch.cat(columns).to(self.metrics_device)
                 if fine_only:
                     score_scale = score_scale[keep]
-        self.predictions[:, :, 0] = torch.sigmoid(self.predictions[:, :, 0])
+        probability = torch.sigmoid(self.predictions[:, :, 0])
+        if self.predictions.shape[2] > 3:
+            # MAQS decode: re-weight the authenticity score with the predicted
+            # localization quality, then drop the extra columns so that soft-NMS,
+            # AP and AR observe exactly the historical 3-column layout.
+            # AUVIRE_Q_ALPHA=1.0 keeps the plain authenticity score (fusion off).
+            quality_alpha = float(os.environ.get("AUVIRE_Q_ALPHA", "0.8"))
+            quality = torch.sigmoid(self.predictions[:, :, 3])
+            if quality_alpha >= 1.0:
+                probability = probability
+            else:
+                probability = probability.clamp_min(1e-12).pow(quality_alpha) * quality.clamp_min(1e-12).pow(
+                    1.0 - quality_alpha
+                )
+            self.predictions = self.predictions[:, :, :3].contiguous()
+        self.predictions[:, :, 0] = probability
         if score_scale is not None:
             self.predictions[:, :, 0] = self.predictions[:, :, 0] * score_scale
         self.predictions[:, :, 1] = torch.clamp(idx - self.predictions[:, :, 1], min=0.0)

@@ -44,6 +44,7 @@ def main():
         model_type=model_cfg["type"],
         factor=factor,
         device=args.device,
+        quality=model_cfg.get("quality"),
     )
     model.load_state_dict(torch.load(args.ckpt, map_location=args.device, weights_only=False)["model"])
     model.to(args.device).eval()
@@ -53,6 +54,8 @@ def main():
         gamma=cfg["criterion"]["params"]["gamma"],
         composition=cfg["criterion"]["composition"],
         factor=factor,
+        quality_beta=cfg["criterion"]["params"].get("quality_beta", 2.0),
+        quality_weight=cfg["criterion"]["params"].get("quality_weight", 0.5),
     )
     loaders = get_loaders(
         dataset=cfg["dataset"]["name"],

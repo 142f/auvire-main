@@ -270,6 +270,7 @@ class Experiment:
         self.use_do = cfg["model"]["conv"]["use_do"]
         self.dropout = cfg["model"]["dropout"]
         self.criterion_composition = cfg["criterion"]["composition"]
+        self.criterion_params = dict(cfg["criterion"].get("params") or {})
         self.alpha = cfg["criterion"]["params"]["alpha"]
         self.gamma = cfg["criterion"]["params"]["gamma"]
         self.lr = cfg["optimization"]["lr"]
@@ -318,6 +319,7 @@ class Experiment:
             model_type=self.model_type,
             factor=self.factor,
             device=self.device,
+            quality=self.cfg.get("model", {}).get("quality"),
         )
 
     def get_criterion(self):
@@ -326,6 +328,8 @@ class Experiment:
             gamma=self.gamma,
             composition=self.criterion_composition,
             factor=self.factor,
+            quality_beta=self.criterion_params.get("quality_beta", 2.0),
+            quality_weight=self.criterion_params.get("quality_weight", 0.5),
         )
 
     def get_scheduler(self, name, optimizer):
