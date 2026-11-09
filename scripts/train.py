@@ -46,6 +46,11 @@ def main():
         if rank_on:
             composition.append("rank")
         cfg["criterion"]["composition"] = composition
+    if os.environ.get("AUVIRE_INIT_CKPT"):
+        # Warm start from an existing checkpoint (post-hoc arms only).
+        cfg["init_checkpoint"] = os.environ["AUVIRE_INIT_CKPT"]
+    if os.environ.get("AUVIRE_LR"):
+        cfg["optimization"]["lr"] = float(os.environ["AUVIRE_LR"])
     if os.environ.get("AUVIRE_KEEP_CKPT"):
         # Measurement-only override: keep the .pth after training so the arm can be
         # re-inspected offline. Does not change any training numerics.

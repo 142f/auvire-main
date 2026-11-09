@@ -322,6 +322,23 @@ class Experiment:
             quality=self.cfg.get("model", {}).get("quality"),
         )
 
+    def _load_initial_weights(self):
+        """Optional warm start (AUVIRE_INIT_CKPT) for post-hoc arms.
+
+        Only the parameters that exist in both models are copied; the quality
+        branch of a warm-started MAQS arm is expected to be listed as missing.
+        """
+        path = self.cfg.get("init_checkpoint")
+        if not path:
+            return
+        payload = torch.load(path, map_location=self.device, weights_only=False)
+        state = payload["model"] if isinstance(payload, dict) and "model" in payload else payload
+        missing, unexpected = self.model.load_state_dict(state, strict=False)
+        unexpected = [key for key in unexpected if not key.startswith("quality.")]
+        print(f"[init] {path}\n[init] missing={list(missing)}\n[init] unexpected={unexpected}")
+        if unexpected:
+            raise RuntimeError(f"warm start mismatch: {unexpected}")
+
     def get_criterion(self):
         return CombinedLoss(
             alpha=self.alpha,
@@ -822,6 +839,7 @@ class Experiment:
                     )
                     self.model = self.get_model()
                     self.model.to(self.device)
+                    self._load_initial_weights()
                     self.optimizer = self.get_optimizer(self.optimizer_name)
                     self.scheduler_dict = {
                         "name": self.scheduler_name,
