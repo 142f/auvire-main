@@ -101,3 +101,29 @@ AUVIRE_BOUNDARY_DIAG=$PWD/results/diag/C_all_3000.json \
 # C_all_3000.json 里的 unreachable_095 / near_miss_08_095 / err_by_len / best_iou_hist
 # 即 D3 表格的全部证据；fps=25，容忍 0.85 帧 = IoU 0.95 对应的最大边界误差 0.0251·L
 ```
+## 8. 第二轮的补充命令（质量读出头 + 集成 + 绝对路径）
+
+```bash
+# 2) 冻结骨干，只训质量头（warm start = 第 1 步的 checkpoint）
+cd /3240608030/auvire-main-maqs
+export AUVIRE_LABEL_MODE=continuous AUVIRE_KEEP_CKPT=1 AUVIRE_EPOCHS=1 \
+       AUVIRE_FOLDER=ckpt/f_a AUVIRE_INIT_CKPT=/3240608030/auvire-main/ckpt/r1_baseline/<ckpt>.pth \
+       AUVIRE_FREEZE_BACKBONE=1 AUVIRE_LR=0.001 AUVIRE_Q_ALPHA=0.8 AUVIRE_Q_OFFSETS=1 \
+       AUVIRE_SEED=1234567891 ARM=f_a
+bash scripts/run_arm.sh          # → logs/f_a/<ts>.meta.json
+
+# 3) 评测（3k 或全量；α 由 AUVIRE_Q_ALPHA 控制，=1.0 即"融合关"）
+AUVIRE_Q_ALPHA=0.8 python3 scripts/diag_boundary.py --json ckpt/f_a/*.json --ckpt ckpt/f_a/*.pth \
+  --split test --limit 0 --out results/diag/final_full.json
+
+# 4) 对照臂
+AUVIRE_Q_ALPHA=0.8 AUVIRE_Q_SHUFFLE=1 ...    # 质量通道置换
+AUVIRE_ORACLE_RANK=1 ...                     # 排序天花板
+AUVIRE_Q_TARGET=binary ...                   # 二值目标变体（训练时设）
+
+# 5) 多头集成（logit 平均）
+python3 scripts/ensemble_eval.py --json <骨干 json> --ckpt <骨干 pth> \
+  --heads ckpt/f_a/*.pth,ckpt/h2/*.pth,ckpt/h3/*.pth --split test --limit 3000 --out results/diag/ens.json
+```
+
+> 环境变量与数值的对应关系（复现时必查）：`AUVIRE_Q_OFFSETS=1`→质量头输入 130 通道；`AUVIRE_Q_TARGET=binary`→二值目标；`AUVIRE_SEED`→换头初始化；`AUVIRE_FREEZE_BACKBONE=1`→只训质量头。
