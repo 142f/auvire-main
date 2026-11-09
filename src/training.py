@@ -363,6 +363,7 @@ class Experiment:
             quality_floor=self.criterion_params.get("quality_floor", 0.0),
             quality_alpha=self.criterion_params.get("quality_alpha", 0.5),
             soft_classification=self.criterion_params.get("soft_classification", False),
+            soft_classification_floor=self.criterion_params.get("soft_classification_floor", 0.0),
             quality_target=self.criterion_params.get("quality_target", "iou"),
             quality_threshold=self.criterion_params.get("quality_threshold", 0.95),
         )

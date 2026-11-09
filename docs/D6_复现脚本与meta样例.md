@@ -127,3 +127,16 @@ python3 scripts/ensemble_eval.py --json <骨干 json> --ckpt <骨干 pth> \
 ```
 
 > 环境变量与数值的对应关系（复现时必查）：`AUVIRE_Q_OFFSETS=1`→质量头输入 130 通道；`AUVIRE_Q_TARGET=binary`→二值目标；`AUVIRE_SEED`→换头初始化；`AUVIRE_FREEZE_BACKBONE=1`→只训质量头。
+## 9. 主创新 S1 的一条命令（最终交付）
+
+```bash
+cd /3240608030/auvire-main-maqs
+export AUVIRE_LABEL_MODE=continuous AUVIRE_KEEP_CKPT=1 AUVIRE_EPOCHS=32 \
+       AUVIRE_QUALITY=0 AUVIRE_SOFT_CLS=1 AUVIRE_SEED=1234567891 \
+       AUVIRE_FOLDER=ckpt/s1_softcls ARM=s1_softcls GIT_COMMIT=<local commit>
+bash scripts/run_arm.sh
+# → logs/s1_softcls/<ts>.meta.json（env/md5/显存/耗时/test_metrics 全在内）
+# 评测：python3 scripts/diag_boundary.py --json ckpt/s1_softcls/*.json --ckpt ckpt/s1_softcls/*.pth --split test --limit 0
+```
+
+**关掉创新点 = 基线**：同一命令把 `AUVIRE_SOFT_CLS` 去掉（或置 0），训练路径与 R1 逐位相同（`losses.focal` 里的软目标分支不执行），结果即 83.405。

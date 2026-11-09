@@ -89,7 +89,8 @@ class CombinedLoss(nn.Module):
 
     def __init__(self, alpha, gamma, composition, factor, quality_beta=2.0, quality_weight=0.5,
                  rank_weight=0.5, rank_margin=0.5, quality_floor=0.0, quality_alpha=0.5,
-                 quality_target="iou", quality_threshold=0.95, soft_classification=False):
+                 quality_target="iou", quality_threshold=0.95, soft_classification=False,
+                 soft_classification_floor=0.0):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -119,6 +120,10 @@ class CombinedLoss(nn.Module):
         # (detached) regression would reach. The score then already orders by
         # localization quality during training, without a second branch.
         self.soft_classification = bool(soft_classification)
+        # Floor on the soft target: a fake frame is never labelled below this value,
+        # so early training (where the regressor is still random and the IoU is ~0)
+        # still teaches "this frame is fake" instead of "everything is real".
+        self.soft_classification_floor = float(soft_classification_floor)
         self.quality_target = str(quality_target).lower()
         self.quality_threshold = float(quality_threshold)
         self.factor = factor
@@ -139,6 +144,8 @@ class CombinedLoss(nn.Module):
                 intersection = torch.minimum(pred_left, gt_left) + torch.minimum(pred_right, gt_right)
                 union = torch.maximum(pred_left, gt_left) + torch.maximum(pred_right, gt_right)
                 iou = intersection / union.clamp(min=1e-8)
+            if self.soft_classification_floor > 0.0:
+                iou = self.soft_classification_floor + (1.0 - self.soft_classification_floor) * iou
             target = target * iou
         loss = torchvision.ops.sigmoid_focal_loss(
             inputs[:, :, 0],
