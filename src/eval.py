@@ -414,6 +414,14 @@ class Evaluation:
                 target = torch.tensor([[float(a), float(b)] for a, b in valid], dtype=boxes.dtype)
                 scores[video] = iou_1d(boxes[video], target).max(dim=1).values
             self.predictions[:, :, 0] = scores
+        if os.environ.get("AUVIRE_WIDTH_RANGE"):
+            # Read-only diagnostic: sink proposals whose interval length (in frames)
+            # falls outside the requested range, to measure how much of the
+            # high-recall error is caused by absurd box widths.
+            low, high = (float(part) for part in os.environ["AUVIRE_WIDTH_RANGE"].split(","))
+            widths = self.predictions[:, :, 2] - self.predictions[:, :, 1]
+            keep = (widths >= low) & (widths <= high)
+            self.predictions[:, :, 0] = self.predictions[:, :, 0] * keep.to(self.predictions.dtype)
         _, indexes = torch.sort(self.predictions[:, :, 0], dim=1, descending=True)
         first_indices = torch.arange(self.predictions.shape[0])[:, None]
         self.predictions = self.predictions[first_indices, indexes]
