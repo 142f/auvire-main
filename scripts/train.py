@@ -55,6 +55,8 @@ def main():
         cfg["model"].setdefault("quality", {})["readout"] = os.environ["AUVIRE_READOUT"].strip().lower() in {"1", "true", "yes", "on"}
     if os.environ.get("AUVIRE_SEED"):
         cfg["seeds"] = [int(os.environ["AUVIRE_SEED"])]
+    if os.environ.get("AUVIRE_SOFT_CLS"):
+        cfg["criterion"]["params"]["soft_classification"] = os.environ["AUVIRE_SOFT_CLS"].strip().lower() in {"1", "true", "yes", "on"}
     if os.environ.get("AUVIRE_Q_POOL"):
         cfg["model"].setdefault("quality", {})["use_pool"] = os.environ["AUVIRE_Q_POOL"].strip().lower() in {"1", "true", "yes", "on"}
     if os.environ.get("AUVIRE_Q_DILATION"):
