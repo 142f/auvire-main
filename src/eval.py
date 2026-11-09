@@ -1,7 +1,9 @@
-from src.metrics import AP, AR
+from src.metrics import AP, AR, iou_1d
 from src.post_process import soft_nms_torch_parallel
 from src.perf_monitor import stage, batches
 from src.datasets import pad_feature_batch
+
+import os
 
 import torch
 import numpy as np
@@ -175,6 +177,60 @@ class Evaluation:
         ar_score = ar(proposals, self.ground_truth)
         self.metrics = {"loss": self.loss, "ap": ap_score, "ar": ar_score}
 
+    def _boundary_diag(self, proposals):
+        """只读诊断：把 @0.95 的失败拆成"边界差几帧"与"段长"两个维度。
+
+        ``AUVIRE_BOUNDARY_DIAG=<out.json>`` 时写盘；不改变任何评测数值。
+        每段取 IoU 最高的提案作为配对，统计起/止边界的绝对误差（帧）。
+        """
+        import json
+
+        path = os.environ["AUVIRE_BOUNDARY_DIAG"].strip()
+        errors, lengths, ious = [], [], []
+        for index, periods in enumerate(self.ground_truth):
+            boxes = [b for b in (periods or []) if float(b[1]) > float(b[0])]
+            if not boxes:
+                continue
+            pred = self.predictions_proposals[index][:, 1:] / self.fps
+            gt = torch.tensor([[float(a), float(b)] for a, b in boxes], dtype=pred.dtype)
+            matrix = iou_1d(pred, gt)
+            best, which = matrix.max(dim=0)
+            for g, p in enumerate(which.tolist()):
+                ious.append(float(best[g]))
+                errors.append([abs(float(pred[p, 0]) - float(gt[g, 0])) * self.fps,
+                               abs(float(pred[p, 1]) - float(gt[g, 1])) * self.fps])
+                lengths.append((float(gt[g, 1]) - float(gt[g, 0])) * self.fps)
+
+        def bucket(values, edges):
+            return {f"{lo}-{hi}": int(sum(1 for v in values if lo <= v < hi))
+                    for lo, hi in zip(edges, edges[1:])}
+
+        edges = [0, 0.5, 1, 1.5, 2, 3, 5, 10, 1e9]
+        payload = {
+            "videos": len(self.ground_truth),
+            "segments": len(ious),
+            "iou_ge": {str(t): int(sum(1 for v in ious if v >= t)) for t in (0.5, 0.75, 0.9, 0.95, 1.0)},
+            "start_err_frames": bucket([e[0] for e in errors], edges),
+            "end_err_frames": bucket([e[1] for e in errors], edges),
+            "seg_len_frames": bucket(lengths, [0, 10, 20, 40, 80, 1e9]),
+            "best_iou_hist": bucket(ious, [0, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0000001]),
+            "unreachable_095": int(sum(1 for v in ious if v < 0.95)),
+            "near_miss_08_095": int(sum(1 for v in ious if 0.8 <= v < 0.95)),
+            "err_by_len": {},
+            "fps": self.fps,
+        }
+        for lo, hi in ((0, 10), (10, 20), (20, 40), (40, 80), (80, 1e9)):
+            sel = [e for e, l in zip(errors, lengths) if lo <= l < hi]
+            if sel:
+                payload["err_by_len"][f"{lo}-{hi}"] = {
+                    "n": len(sel),
+                    "start_med_frames": round(float(torch.tensor([e[0] for e in sel]).median()), 3),
+                    "end_med_frames": round(float(torch.tensor([e[1] for e in sel]).median()), 3),
+                }
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        print(f"[boundary_diag] 已写入 {path}，配对段数 {len(ious)}")
+
     def compute_metrics(self):
         self.get_predictions()
         if self.show_progress:
@@ -185,6 +241,9 @@ class Evaluation:
             proposals = soft_nms_torch_parallel(
                 self.predictions, self.sigma, self.t1, self.t2, self.fps, self.metrics_device
             )
+            self.predictions_proposals = proposals.detach().cpu()
+            if os.environ.get("AUVIRE_BOUNDARY_DIAG"):
+                self._boundary_diag(proposals)
         with stage(self.perf_monitor, "metrics", always=True):
             if self.task == "tfl":
                 self.compute_tfl_metrics(proposals)
@@ -217,10 +276,30 @@ class Evaluation:
 
     def transform_predictions(self):
         idx = torch.arange(0, self.max_length).to(self.metrics_device)
+        # AUVIRE_FINE_ONLY=1：只保留 stride=1 两级的提案，用于检验粗层（2/4 帧步长）
+        # 是否稀释 AP@0.95。默认关闭，不改变任何既有行为。
+        fine_only = os.environ.get("AUVIRE_FINE_ONLY", "").strip().lower() in {"1", "true", "yes"}
+        # AUVIRE_LEVEL_SCALE="w1,w2,w3,w4"：按级乘到置信度上，用于检验粗层提案的排序是否被
+        # 系统性高估（0 训练成本的 level-aware 重打分）。默认关闭。
+        score_scale = None
         if isinstance(self.predictions, list):
-            idx = torch.cat([idx[:: self.factor[i]] for i, _ in enumerate(self.predictions)])
+            strides = [self.factor[i] for i, _ in enumerate(self.predictions)]
+            widths = [tensor.shape[1] for tensor in self.predictions]
+            idx = torch.cat([idx[:: stride] for stride in strides])
             self.predictions = torch.cat(self.predictions, dim=1)
+            if fine_only:
+                keep = torch.cat([torch.full((width,), stride == 1, dtype=torch.bool)
+                                  for stride, width in zip(strides, widths)]).to(self.metrics_device)
+                idx, self.predictions = idx[keep], self.predictions[:, keep]
+            weights = [w.strip() for w in os.environ.get("AUVIRE_LEVEL_SCALE", "").split(",") if w.strip()]
+            if weights and len(weights) == len(widths):
+                columns = [torch.full((width,), float(w)) for w, width in zip(weights, widths)]
+                score_scale = torch.cat(columns).to(self.metrics_device)
+                if fine_only:
+                    score_scale = score_scale[keep]
         self.predictions[:, :, 0] = torch.sigmoid(self.predictions[:, :, 0])
+        if score_scale is not None:
+            self.predictions[:, :, 0] = self.predictions[:, :, 0] * score_scale
         self.predictions[:, :, 1] = torch.clamp(idx - self.predictions[:, :, 1], min=0.0)
         self.predictions[:, :, 2] = torch.clamp(idx + self.predictions[:, :, 2], max=self.max_length)
         _, indexes = torch.sort(self.predictions[:, :, 0], dim=1, descending=True)
