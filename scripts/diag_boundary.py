@@ -83,6 +83,17 @@ def main():
     os.environ["AUVIRE_BOUNDARY_DIAG"] = args.out
     evaluation.compute_metrics()
     print(json.dumps({k: v for k, v in evaluation.metrics.items()}, ensure_ascii=False))
+    # Fold the metrics into the same JSON so a sweep can be parsed without the log.
+    try:
+        with open(args.out, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        payload = {}
+    payload["metrics"] = evaluation.metrics
+    payload["limit"] = args.limit
+    payload["ckpt"] = os.path.abspath(args.ckpt)
+    with open(args.out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":

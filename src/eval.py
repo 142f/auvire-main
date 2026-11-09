@@ -231,6 +231,81 @@ class Evaluation:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
         print(f"[boundary_diag] 已写入 {path}，配对段数 {len(ious)}")
 
+    def _rank_diag(self, proposals):
+        """只读诊断：AP@0.95 的排序损失被谁吃掉了。
+
+        把全部提案按分数全局排序（与 AP 的口径一致），在每个召回水平上统计前 k 个提案里
+        非 TP 的三类来源：
+          real_video —— 该视频没有任何 GT（纯真视频的高分误报）
+          near_miss  —— 与本视频 GT 的 IoU 落在 (0.5, 0.95]（近失：框差一点）
+          other      —— 本视频有 GT，但该提案 IoU<=0.5（段外误报）
+        AUVIRE_RANK_DIAG=<out.json> 时写盘；不改变任何评测数值。
+        """
+        import json
+
+        path = os.environ["AUVIRE_RANK_DIAG"].strip()
+        scores = proposals[:, :, 0]
+        boxes = proposals[:, :, 1:3] / self.fps
+        videos, count = scores.shape
+        best = torch.zeros((videos, count), dtype=scores.dtype)
+        has_gt = torch.zeros(videos, dtype=torch.bool)
+        per_video_gt = []
+        for video, periods in enumerate(self.ground_truth):
+            valid = [b for b in (periods or []) if float(b[1]) > float(b[0])]
+            per_video_gt.append(len(valid))
+            if not valid:
+                continue
+            has_gt[video] = True
+            target = torch.tensor([[float(a), float(b)] for a, b in valid], dtype=boxes.dtype)
+            best[video] = iou_1d(boxes[video], target).max(dim=1).values
+
+        flat_best = best.reshape(-1)
+        flat_video = torch.arange(videos).repeat_interleave(count)
+        order = torch.argsort(scores.reshape(-1), descending=True, stable=True)
+
+        hits = (best > 0.95) & has_gt[:, None]
+        taken = torch.zeros_like(hits)
+        matched = torch.zeros_like(hits)
+        rows = torch.arange(videos)
+        for _ in range(max(per_video_gt, default=0)):
+            candidates = hits & ~taken
+            pick = candidates.any(dim=1)
+            index = candidates.to(torch.uint8).argmax(dim=1)
+            matched[rows[pick], index[pick]] = True
+            taken[rows[pick], index[pick]] = True
+
+        is_tp = matched.reshape(-1)[order]
+        ordered_best = flat_best[order]
+        ordered_has_gt = has_gt[flat_video[order]]
+        total_gt = int(sum(per_video_gt))
+        cum_tp = torch.cumsum(is_tp.float(), dim=0)
+        levels = {}
+        for recall_target in (0.5, 0.8, 0.9, 0.95):
+            need = torch.tensor(recall_target * total_gt)
+            k = int(torch.searchsorted(cum_tp, need).item()) + 1
+            k = min(k, len(ordered_best))
+            prefix_has_gt = ordered_has_gt[:k]
+            prefix_is_tp = is_tp[:k]
+            prefix_best = ordered_best[:k]
+            levels[str(recall_target)] = {
+                "k": k,
+                "tp": int(prefix_is_tp.sum()),
+                "real_video_fp": int((~prefix_has_gt).sum()),
+                "near_miss_fp": int((prefix_has_gt & ~prefix_is_tp & (prefix_best > 0.5)).sum()),
+                "other_fp": int((prefix_has_gt & ~prefix_is_tp & (prefix_best <= 0.5)).sum()),
+                "precision": round(float(prefix_is_tp.float().mean()), 4),
+            }
+        payload = {
+            "videos": videos,
+            "proposals_per_video": count,
+            "total_proposals": int(videos * count),
+            "gt_segments": total_gt,
+            "videos_without_gt": int((~has_gt).sum()),
+            "at_recall": levels,
+        }
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+        print(f"[rank_diag] 已写入 {path}")
     def compute_metrics(self):
         self.get_predictions()
         if self.show_progress:
@@ -244,6 +319,8 @@ class Evaluation:
             self.predictions_proposals = proposals.detach().cpu()
             if os.environ.get("AUVIRE_BOUNDARY_DIAG"):
                 self._boundary_diag(proposals)
+            if os.environ.get("AUVIRE_RANK_DIAG"):
+                self._rank_diag(proposals)
         with stage(self.perf_monitor, "metrics", always=True):
             if self.task == "tfl":
                 self.compute_tfl_metrics(proposals)
