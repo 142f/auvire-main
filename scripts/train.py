@@ -39,6 +39,13 @@ def main():
         if quality_on:
             composition.append("quality")
         cfg["criterion"]["composition"] = composition
+    if os.environ.get("AUVIRE_RANK_LOSS"):
+        # Backup arm selector: adds the hard-pair ranking term on top of MAQS.
+        rank_on = os.environ["AUVIRE_RANK_LOSS"].strip().lower() in {"1", "true", "yes", "on"}
+        composition = [item for item in cfg["criterion"]["composition"] if item != "rank"]
+        if rank_on:
+            composition.append("rank")
+        cfg["criterion"]["composition"] = composition
     if os.environ.get("AUVIRE_KEEP_CKPT"):
         # Measurement-only override: keep the .pth after training so the arm can be
         # re-inspected offline. Does not change any training numerics.

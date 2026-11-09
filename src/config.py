@@ -39,7 +39,8 @@ DEFAULT_LAVDF = {
     },
     "criterion": {
         "composition": ["focal", "diou", "rec", "quality"],
-        "params": {"alpha": 0.98, "gamma": 2, "quality_beta": 2.0, "quality_weight": 0.5},
+        "params": {"alpha": 0.98, "gamma": 2, "quality_beta": 2.0, "quality_weight": 0.5,
+                   "rank_weight": 0.5, "rank_margin": 0.5},
     },
     "optimization": {
         "lr": 0.001,
@@ -73,7 +74,8 @@ DEFAULT_AVDEEPFAKE1M = {
     },
     "criterion": {
         "composition": ["focal", "diou", "rec", "quality"],
-        "params": {"alpha": 0.98, "gamma": 2, "quality_beta": 2.0, "quality_weight": 0.5},
+        "params": {"alpha": 0.98, "gamma": 2, "quality_beta": 2.0, "quality_weight": 0.5,
+                   "rank_weight": 0.5, "rank_margin": 0.5},
     },
     "optimization": {
         "lr": 0.001,

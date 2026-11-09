@@ -330,6 +330,8 @@ class Experiment:
             factor=self.factor,
             quality_beta=self.criterion_params.get("quality_beta", 2.0),
             quality_weight=self.criterion_params.get("quality_weight", 0.5),
+            rank_weight=self.criterion_params.get("rank_weight", 0.5),
+            rank_margin=self.criterion_params.get("rank_margin", 0.5),
         )
 
     def get_scheduler(self, name, optimizer):

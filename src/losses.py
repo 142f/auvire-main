@@ -87,7 +87,8 @@ class BCELoss(nn.Module):
 
 class CombinedLoss(nn.Module):
 
-    def __init__(self, alpha, gamma, composition, factor, quality_beta=2.0, quality_weight=0.5):
+    def __init__(self, alpha, gamma, composition, factor, quality_beta=2.0, quality_weight=0.5,
+                 rank_weight=0.5, rank_margin=0.5):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -98,6 +99,9 @@ class CombinedLoss(nn.Module):
         self.l_det = 1.0 if "det" in composition else 0.0
         self.l_quality = float(quality_weight) if "quality" in composition else 0.0
         self.quality_beta = float(quality_beta)
+        # MAQS-R (backup arm): hard-pair ranking term on the quality logits.
+        self.l_rank = float(rank_weight) if "rank" in composition else 0.0
+        self.rank_margin = float(rank_margin)
         self.factor = factor
         self.bce = BCELoss()
 
@@ -157,6 +161,36 @@ class CombinedLoss(nn.Module):
             dim=-1,
         ).mean(dim=-1)
 
+    def ranking(self, inputs, targets):
+        """Hard-pair ranking on the quality logits (MAQS-R backup arm).
+
+        For every video the best-positive proposal (IoU >= 0.95) must outrank the
+        hardest near-miss (0.4 <= IoU <= 0.9), which is exactly the comparison
+        AP@0.95 makes when a near-miss sits above a true positive.
+        """
+        logits = inputs[:, :, 3]
+        with torch.no_grad():
+            pred_left, pred_right = inputs[:, :, 1].detach(), inputs[:, :, 2].detach()
+            gt_left, gt_right = targets[:, :, 1], targets[:, :, 2]
+            intersection = torch.minimum(pred_left, gt_left) + torch.minimum(pred_right, gt_right)
+            union = torch.maximum(pred_left, gt_left) + torch.maximum(pred_right, gt_right)
+            iou = intersection / union.clamp(min=1e-8)
+        positive = iou >= 0.95
+        negative = (iou >= 0.4) & (iou <= 0.9)
+        valid = positive.any(dim=1) & negative.any(dim=1)
+        if not bool(valid.any()):
+            return logits.sum() * 0.0
+        best_positive = logits.masked_fill(~positive, float("-inf")).max(dim=1).values
+        worst_negative = logits.masked_fill(~negative, float("-inf")).max(dim=1).values
+        margin = self.rank_margin + worst_negative - best_positive
+        return torch.nn.functional.softplus(margin)[valid].mean()
+
+    def ranking_loss(self, inputs, targets):
+        return torch.stack(
+            [self.ranking(input_, targets[:, :: self.factor[i], :]) for i, input_ in enumerate(inputs)],
+            dim=-1,
+        ).mean(dim=-1)
+
     def num_positives(self, targets):
         den = targets[:, :, 0].sum(dim=-1)
         den[den == 0] = 1
@@ -203,4 +237,6 @@ class CombinedLoss(nn.Module):
         loss = (loss_loc + self.l_det * loss_det + self.l_rec * loss_rec) / (1 + self.l_det + self.l_rec)
         if loss_quality is not None:
             loss = loss + self.l_quality * loss_quality
+        if self.l_rank and inputs[0].shape[-1] > 3:
+            loss = loss + self.l_rank * self.ranking_loss(inputs, targets)
         return loss.mean()
