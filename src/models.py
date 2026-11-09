@@ -152,13 +152,14 @@ class UpsamplingTransformerBlock(nn.Module):
 
 class ConvBlock(nn.Module):
     def __init__(
-        self, in_channels, out_channels, kernel_size, stride, padding, timesteps, dropout, use_ln, use_rl, use_do
+        self, in_channels, out_channels, kernel_size, stride, padding, timesteps, dropout, use_ln, use_rl, use_do,
+        dilation=1,
     ):
         super(ConvBlock, self).__init__()
         self.use_ln = use_ln
         self.use_rl = use_rl
         self.use_do = use_do
-        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding)
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding, dilation=dilation)
         if use_ln:
             self.norm = nn.LayerNorm([out_channels, timesteps])
         if use_rl:
@@ -755,7 +756,8 @@ class EncoderModel(nn.Module):
 
 class HeadModule(nn.Module):
 
-    def __init__(self, d_model, output_size, timesteps, use_ln, use_rl, use_do, dropout, final_relu, in_channels=None):
+    def __init__(self, d_model, output_size, timesteps, use_ln, use_rl, use_do, dropout, final_relu, in_channels=None,
+                 dilation=1):
         super().__init__()
         in_channels = d_model if in_channels is None else in_channels
         submodules = [
@@ -770,6 +772,7 @@ class HeadModule(nn.Module):
                 use_ln=use_ln,
                 use_rl=use_rl,
                 use_do=use_do,
+                dilation=dilation,
             ),
             ConvBlock(
                 in_channels=d_model,
@@ -782,6 +785,7 @@ class HeadModule(nn.Module):
                 use_ln=use_ln,
                 use_rl=use_rl,
                 use_do=use_do,
+                dilation=dilation,
             ),
             nn.Conv1d(
                 in_channels=d_model,
@@ -801,7 +805,7 @@ class HeadModule(nn.Module):
 class HeadModel(nn.Module):
 
     def __init__(self, d_model, factor, output_size, max_length, fpn, use_ln, use_rl, use_do, dropout, final_relu,
-                 in_channels=None):
+                 in_channels=None, dilation=1):
         super().__init__()
         self.fpn = fpn
         if self.fpn:
@@ -817,6 +821,7 @@ class HeadModel(nn.Module):
                         dropout=dropout,
                         final_relu=final_relu,
                         in_channels=in_channels,
+                        dilation=dilation,
                     )
                     for f in factor
                 ]
@@ -834,6 +839,7 @@ class HeadModel(nn.Module):
                         dropout=dropout,
                         final_relu=final_relu,
                         in_channels=in_channels,
+                        dilation=dilation,
                     )
                 ]
             )
@@ -953,6 +959,15 @@ class Model(nn.Module):
         # would emit at this position, so it can learn "this box is wider than the
         # support I see" instead of having to infer the offsets from features.
         self.quality_use_offsets = bool(quality_cfg.get("use_offsets", True))
+        # Dilated context for the quality branch: judging "is my box right" needs the
+        # whole segment, not the 3-frame neighbourhood the k=3 stack can see.
+        self.quality_dilation = int(quality_cfg.get("dilation", 1))
+        # Box-conditioned read-out: in addition to the local feature and the box,
+        # the head sees the *mean feature over the predicted interval*. A box that
+        # really covers a fake segment pools fake-only evidence; a spurious box
+        # mixes real and fake frames. This is the segment-level evidence the local
+        # k=3 stack cannot see.
+        self.quality_use_pool = bool(quality_cfg.get("use_pool", False))
         if self.quality_enabled:
             self.quality = HeadModel(
                 d_model=self.d_model,
@@ -965,8 +980,36 @@ class Model(nn.Module):
                 use_do=self.use_do,
                 dropout=self.dropout_head,
                 final_relu=False,
-                in_channels=self.d_model + (2 if self.quality_use_offsets else 0),
+                in_channels=self.d_model
+                + (2 if self.quality_use_offsets else 0)
+                + (self.d_model if self.quality_use_pool else 0),
+                dilation=self.quality_dilation,
             )
+
+    @staticmethod
+    def _pool_over_box(feature, boundary, stride):
+        """Mean feature over the interval the regressor would emit at each frame.
+
+        feature [B, d, T], boundary [B, 2, T] in *original* frames, stride = the
+        level's downsampling factor. Returns [B, d, T].
+        """
+        batch, channels, length = feature.shape
+        left = (boundary[:, 0, :] / stride).clamp(min=0.0)
+        right = (boundary[:, 1, :] / stride).clamp(min=0.0)
+        positions = torch.arange(length, device=feature.device, dtype=feature.dtype).view(1, 1, length)
+        start = torch.floor(positions - left).clamp(min=0.0)
+        end = torch.ceil(positions + right).clamp(max=length - 1.0)
+        start = start.squeeze(1).long()
+        end = end.squeeze(1).long()
+        start = torch.minimum(start, end)
+        cumulative = torch.cumsum(feature, dim=2)
+        zero = torch.zeros(batch, channels, 1, device=feature.device, dtype=feature.dtype)
+        padded = torch.cat((zero, cumulative), dim=2)  # index k means "sum of first k frames"
+        rows = torch.arange(batch, device=feature.device).view(batch, 1)
+        end_sum = padded[rows, :, end.reshape(batch, -1)].view(batch, channels, length)
+        start_sum = padded[rows, :, start.reshape(batch, -1)].view(batch, channels, length)
+        counts = (end - start + 1).to(feature.dtype).view(batch, 1, length).clamp(min=1.0)
+        return (end_sum - start_sum) / counts
 
     def get_model_inputs(self, x):
         return x[0].permute((0, 2, 1)), x[1].permute((0, 2, 1))
@@ -1044,12 +1087,16 @@ class Model(nn.Module):
         boundaries = self.regression(features)
         if self.quality_enabled:
             quality_input = []
-            for feature, boundary in zip(features, boundaries):
+            for index, (feature, boundary) in enumerate(zip(features, boundaries)):
                 item = feature.detach() if self.quality_readout else feature
+                detached_boundary = boundary.detach()
                 if self.quality_use_offsets:
                     # boundary is [B, 2, T]; keep it detached so the score branch
                     # cannot move the regressor it is scoring.
-                    item = torch.cat((item, boundary.detach()), dim=1)
+                    item = torch.cat((item, detached_boundary), dim=1)
+                if self.quality_use_pool:
+                    item = torch.cat((item, self._pool_over_box(feature.detach(), detached_boundary,
+                                                               self.factor[index])), dim=1)
                 quality_input.append(item)
             qualities = self.quality(quality_input)
             outputs = [
