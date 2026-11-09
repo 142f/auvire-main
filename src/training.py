@@ -362,6 +362,8 @@ class Experiment:
             rank_margin=self.criterion_params.get("rank_margin", 0.5),
             quality_floor=self.criterion_params.get("quality_floor", 0.0),
             quality_alpha=self.criterion_params.get("quality_alpha", 0.5),
+            quality_target=self.criterion_params.get("quality_target", "iou"),
+            quality_threshold=self.criterion_params.get("quality_threshold", 0.95),
         )
 
     def get_scheduler(self, name, optimizer):

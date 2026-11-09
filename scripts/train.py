@@ -53,6 +53,10 @@ def main():
         cfg["freeze_backbone"] = os.environ["AUVIRE_FREEZE_BACKBONE"].strip().lower() in {"1", "true", "yes", "on"}
     if os.environ.get("AUVIRE_READOUT"):
         cfg["model"].setdefault("quality", {})["readout"] = os.environ["AUVIRE_READOUT"].strip().lower() in {"1", "true", "yes", "on"}
+    if os.environ.get("AUVIRE_SEED"):
+        cfg["seeds"] = [int(os.environ["AUVIRE_SEED"])]
+    if os.environ.get("AUVIRE_Q_TARGET"):
+        cfg["criterion"]["params"]["quality_target"] = os.environ["AUVIRE_Q_TARGET"].strip().lower()
     if os.environ.get("AUVIRE_Q_FLOOR"):
         cfg["criterion"]["params"]["quality_floor"] = float(os.environ["AUVIRE_Q_FLOOR"])
     if os.environ.get("AUVIRE_LR"):

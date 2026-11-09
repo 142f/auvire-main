@@ -88,7 +88,8 @@ class BCELoss(nn.Module):
 class CombinedLoss(nn.Module):
 
     def __init__(self, alpha, gamma, composition, factor, quality_beta=2.0, quality_weight=0.5,
-                 rank_weight=0.5, rank_margin=0.5, quality_floor=0.0, quality_alpha=0.5):
+                 rank_weight=0.5, rank_margin=0.5, quality_floor=0.0, quality_alpha=0.5,
+                 quality_target="iou", quality_threshold=0.95):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -110,6 +111,11 @@ class CombinedLoss(nn.Module):
         # positive-starved classification task would stop it from learning to
         # suppress the spurious boxes that dominate the high-recall ranks).
         self.quality_alpha = float(quality_alpha)
+        # Target family: "iou" regresses the interval IoU, "binary" predicts the
+        # event AP@0.95 actually scores (IoU above the threshold). The binary
+        # variant turns the branch into P(this box is a true positive).
+        self.quality_target = str(quality_target).lower()
+        self.quality_threshold = float(quality_threshold)
         self.factor = factor
         self.bce = BCELoss()
 
@@ -158,6 +164,8 @@ class CombinedLoss(nn.Module):
             if self.quality_floor > 0.0:
                 floor = self.quality_floor
                 iou = ((iou - floor) / (1.0 - floor)).clamp(min=0.0, max=1.0)
+            if self.quality_target == "binary":
+                iou = (iou >= self.quality_threshold).to(iou.dtype)
         loss = torchvision.ops.sigmoid_focal_loss(logits, iou, self.quality_alpha, self.gamma, "none")
         weight = (iou - torch.sigmoid(logits)).abs().pow(self.quality_beta)
         return weight * loss
