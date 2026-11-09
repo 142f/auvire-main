@@ -305,6 +305,12 @@ class Evaluation:
             # AUVIRE_Q_ALPHA=1.0 keeps the plain authenticity score (fusion off).
             quality_alpha = float(os.environ.get("AUVIRE_Q_ALPHA", "0.8"))
             quality = torch.sigmoid(self.predictions[:, :, 3])
+            if os.environ.get("AUVIRE_Q_SHUFFLE"):
+                # Read-only control: destroy the *content* of the quality signal
+                # while keeping its marginal distribution, so any remaining gain
+                # cannot be attributed to localization quality.
+                flat = quality.reshape(-1)[torch.randperm(quality.numel())]
+                quality = flat.reshape(quality.shape)
             if quality_alpha >= 1.0:
                 probability = probability
             else:
@@ -317,6 +323,20 @@ class Evaluation:
             self.predictions[:, :, 0] = self.predictions[:, :, 0] * score_scale
         self.predictions[:, :, 1] = torch.clamp(idx - self.predictions[:, :, 1], min=0.0)
         self.predictions[:, :, 2] = torch.clamp(idx + self.predictions[:, :, 2], max=self.max_length)
+        if os.environ.get("AUVIRE_ORACLE_RANK"):
+            # Read-only diagnostic (never a reported setting): replace the score by
+            # the best IoU this proposal reaches against any ground-truth segment.
+            # The resulting AP@0.95 is the value a *perfect* quality predictor would
+            # obtain, i.e. the ceiling of any score-side mechanism.
+            boxes = self.predictions[:, :, 1:3] / self.fps
+            scores = torch.zeros(boxes.shape[:2], dtype=boxes.dtype, device=boxes.device)
+            for video, periods in enumerate(self.ground_truth):
+                valid = [b for b in (periods or []) if float(b[1]) > float(b[0])]
+                if not valid:
+                    continue
+                target = torch.tensor([[float(a), float(b)] for a, b in valid], dtype=boxes.dtype)
+                scores[video] = iou_1d(boxes[video], target).max(dim=1).values
+            self.predictions[:, :, 0] = scores
         _, indexes = torch.sort(self.predictions[:, :, 0], dim=1, descending=True)
         first_indices = torch.arange(self.predictions.shape[0])[:, None]
         self.predictions = self.predictions[first_indices, indexes]

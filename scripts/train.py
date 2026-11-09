@@ -25,6 +25,10 @@ def main():
         cfg["epochs"] = int(os.environ["AUVIRE_EPOCHS"])
     if os.environ.get("AUVIRE_WORKERS"):
         cfg["dataloader"]["workers"] = int(os.environ["AUVIRE_WORKERS"])
+    if os.environ.get("AUVIRE_BATCH"):
+        # Measurement-only override (smoke runs on a shared GPU). Unset means the
+        # published batch size of 64.
+        cfg["dataloader"]["batch_size"] = int(os.environ["AUVIRE_BATCH"])
     if os.environ.get("AUVIRE_QUALITY") is not None:
         # Arm selector (single variable): 0 = baseline, 1 = MAQS. Both the head
         # and its loss term are switched together so the two arms differ by
