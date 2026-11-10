@@ -40,7 +40,12 @@ DEFAULT_LAVDF = {
     "criterion": {
         "composition": ["focal", "diou", "rec", "quality"],
         "params": {"alpha": 0.98, "gamma": 2, "quality_beta": 2.0, "quality_weight": 0.5,
-                   "quality_alpha": 0.5, "rank_weight": 0.5, "rank_margin": 0.5},
+                   "quality_alpha": 0.5, "rank_weight": 0.5, "rank_margin": 0.5,
+                   # S1 (main contribution): label a fake frame with the IoU its own
+                   # regressed interval reaches, so the score orders by localization
+                   # quality from the first epoch on. AUVIRE_SOFT_CLS=0 restores the
+                   # published hard-target baseline.
+                   "soft_classification": True, "soft_classification_floor": 0.0},
     },
     "freeze_backbone": False,
     "optimization": {
@@ -76,7 +81,8 @@ DEFAULT_AVDEEPFAKE1M = {
     "criterion": {
         "composition": ["focal", "diou", "rec", "quality"],
         "params": {"alpha": 0.98, "gamma": 2, "quality_beta": 2.0, "quality_weight": 0.5,
-                   "rank_weight": 0.5, "rank_margin": 0.5},
+                   "rank_weight": 0.5, "rank_margin": 0.5,
+                   "soft_classification": True, "soft_classification_floor": 0.0},
     },
     "freeze_backbone": False,
     "optimization": {

@@ -140,3 +140,13 @@ bash scripts/run_arm.sh
 ```
 
 **关掉创新点 = 基线**：同一命令把 `AUVIRE_SOFT_CLS` 去掉（或置 0），训练路径与 R1 逐位相同（`losses.focal` 里的软目标分支不执行），结果即 83.405。
+## 10. 关于"默认开关"的更正（2026-11-10）
+
+S1 原先只能由 `AUVIRE_SOFT_CLS=1` 打开，这违反任务书淘汰线里的"默认关闭 → 不算创新"。已把 `soft_classification: True` 写进 `src/config.py` 的 `DEFAULT_LAVDF` / `DEFAULT_AVDEEPFAKE1M`，即：
+
+| 臂 | 命令 |
+|---|---|
+| **主方法（S1，默认）** | `AUVIRE_LABEL_MODE=continuous AUVIRE_QUALITY=0 AUVIRE_EPOCHS=32 python3 scripts/train.py -d lavdf` |
+| 基线（关掉创新点） | 同上 + `AUVIRE_SOFT_CLS=0` |
+
+两者除该目标外**代码路径完全相同**（`losses.focal` 第 140 行的分支），因此"关掉即回基线"是构造性的，不依赖另一个实验。
