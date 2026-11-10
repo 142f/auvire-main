@@ -25,6 +25,16 @@ def main():
         cfg["epochs"] = int(os.environ["AUVIRE_EPOCHS"])
     if os.environ.get("AUVIRE_WORKERS"):
         cfg["dataloader"]["workers"] = int(os.environ["AUVIRE_WORKERS"])
+    if os.environ.get("AUVIRE_BATCH"):
+        # Measurement-only override (smoke runs on a shared GPU). Unset means the
+        # published batch size of 64.
+        cfg["dataloader"]["batch_size"] = int(os.environ["AUVIRE_BATCH"])
+    if os.environ.get("AUVIRE_SEED"):
+        cfg["seeds"] = [int(os.environ["AUVIRE_SEED"])]
+    if os.environ.get("AUVIRE_SOFT_CLS"):
+        cfg["criterion"]["params"]["soft_classification"] = os.environ["AUVIRE_SOFT_CLS"].strip().lower() in {"1", "true", "yes", "on"}
+    if os.environ.get("AUVIRE_SOFT_FLOOR"):
+        cfg["criterion"]["params"]["soft_classification_floor"] = float(os.environ["AUVIRE_SOFT_FLOOR"])
     if os.environ.get("AUVIRE_KEEP_CKPT"):
         # Measurement-only override: keep the .pth after training so the arm can be
         # re-inspected offline. Does not change any training numerics.

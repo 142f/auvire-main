@@ -152,13 +152,14 @@ class UpsamplingTransformerBlock(nn.Module):
 
 class ConvBlock(nn.Module):
     def __init__(
-        self, in_channels, out_channels, kernel_size, stride, padding, timesteps, dropout, use_ln, use_rl, use_do
+        self, in_channels, out_channels, kernel_size, stride, padding, timesteps, dropout, use_ln, use_rl, use_do,
+        dilation=1,
     ):
         super(ConvBlock, self).__init__()
         self.use_ln = use_ln
         self.use_rl = use_rl
         self.use_do = use_do
-        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding)
+        self.conv = nn.Conv1d(in_channels, out_channels, kernel_size, stride, padding, dilation=dilation)
         if use_ln:
             self.norm = nn.LayerNorm([out_channels, timesteps])
         if use_rl:
@@ -755,11 +756,13 @@ class EncoderModel(nn.Module):
 
 class HeadModule(nn.Module):
 
-    def __init__(self, d_model, output_size, timesteps, use_ln, use_rl, use_do, dropout, final_relu):
+    def __init__(self, d_model, output_size, timesteps, use_ln, use_rl, use_do, dropout, final_relu, in_channels=None,
+                 dilation=1):
         super().__init__()
+        in_channels = d_model if in_channels is None else in_channels
         submodules = [
             ConvBlock(
-                in_channels=d_model,
+                in_channels=in_channels,
                 out_channels=d_model,
                 kernel_size=3,
                 stride=1,
@@ -769,6 +772,7 @@ class HeadModule(nn.Module):
                 use_ln=use_ln,
                 use_rl=use_rl,
                 use_do=use_do,
+                dilation=dilation,
             ),
             ConvBlock(
                 in_channels=d_model,
@@ -781,6 +785,7 @@ class HeadModule(nn.Module):
                 use_ln=use_ln,
                 use_rl=use_rl,
                 use_do=use_do,
+                dilation=dilation,
             ),
             nn.Conv1d(
                 in_channels=d_model,
@@ -799,7 +804,8 @@ class HeadModule(nn.Module):
 
 class HeadModel(nn.Module):
 
-    def __init__(self, d_model, factor, output_size, max_length, fpn, use_ln, use_rl, use_do, dropout, final_relu):
+    def __init__(self, d_model, factor, output_size, max_length, fpn, use_ln, use_rl, use_do, dropout, final_relu,
+                 in_channels=None, dilation=1):
         super().__init__()
         self.fpn = fpn
         if self.fpn:
@@ -814,6 +820,8 @@ class HeadModel(nn.Module):
                         use_do=use_do,
                         dropout=dropout,
                         final_relu=final_relu,
+                        in_channels=in_channels,
+                        dilation=dilation,
                     )
                     for f in factor
                 ]
@@ -830,6 +838,8 @@ class HeadModel(nn.Module):
                         use_do=use_do,
                         dropout=dropout,
                         final_relu=final_relu,
+                        in_channels=in_channels,
+                        dilation=dilation,
                     )
                 ]
             )

@@ -87,7 +87,8 @@ class BCELoss(nn.Module):
 
 class CombinedLoss(nn.Module):
 
-    def __init__(self, alpha, gamma, composition, factor):
+    def __init__(self, alpha, gamma, composition, factor, soft_classification=False,
+                 soft_classification_floor=0.0):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
@@ -96,19 +97,39 @@ class CombinedLoss(nn.Module):
         self.l_sl1 = 1.0 if "sl1" in composition else 0.0
         self.l_rec = 1.0 if "rec" in composition else 0.0
         self.l_det = 1.0 if "det" in composition else 0.0
+        # Metric-aligned classification target (S1, main contribution): instead of a
+        # hard 1 on every frame inside a fake period, a positive frame is labelled
+        # with the IoU its own (detached) regression would reach. The score then
+        # already orders by localization quality during training.
+        self.soft_classification = bool(soft_classification)
+        # Floor on the soft target: a fake frame is never labelled below this value,
+        # so early training (where the regressor is still random and the IoU is ~0)
+        # still teaches "this frame is fake" instead of "everything is real".
+        self.soft_classification_floor = float(soft_classification_floor)
         self.factor = factor
         self.bce = BCELoss()
 
     def smooth_l1(self, inputs, targets):
-        loss = torch.nn.functional.smooth_l1_loss(inputs[:, :, 1:] / 25, targets[:, :, 1:] / 25, reduction="none")
+        loss = torch.nn.functional.smooth_l1_loss(inputs[:, :, 1:3] / 25, targets[:, :, 1:] / 25, reduction="none")
         loss = loss.mean(dim=-1)
         loss = targets[:, :, 0] * loss
         return loss
 
     def focal(self, inputs, targets):
+        target = targets[:, :, 0]
+        if self.soft_classification:
+            with torch.no_grad():
+                pred_left, pred_right = inputs[:, :, 1].detach(), inputs[:, :, 2].detach()
+                gt_left, gt_right = targets[:, :, 1], targets[:, :, 2]
+                intersection = torch.minimum(pred_left, gt_left) + torch.minimum(pred_right, gt_right)
+                union = torch.maximum(pred_left, gt_left) + torch.maximum(pred_right, gt_right)
+                iou = intersection / union.clamp(min=1e-8)
+            if self.soft_classification_floor > 0.0:
+                iou = self.soft_classification_floor + (1.0 - self.soft_classification_floor) * iou
+            target = target * iou
         loss = torchvision.ops.sigmoid_focal_loss(
             inputs[:, :, 0],
-            targets[:, :, 0],
+            target,
             self.alpha,
             self.gamma,
             "none",
@@ -117,7 +138,7 @@ class CombinedLoss(nn.Module):
 
     def diou(self, inputs, targets):
         loss = ctr_diou_loss_1d(
-            input_offsets=inputs[:, :, 1:].reshape((-1, 2)),
+            input_offsets=inputs[:, :, 1:3].reshape((-1, 2)),
             target_offsets=targets[:, :, 1:].view(-1, 2),
             reduction="none",
         ).view(inputs.shape[0], inputs.shape[1])

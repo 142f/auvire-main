@@ -270,6 +270,7 @@ class Experiment:
         self.use_do = cfg["model"]["conv"]["use_do"]
         self.dropout = cfg["model"]["dropout"]
         self.criterion_composition = cfg["criterion"]["composition"]
+        self.criterion_params = dict(cfg["criterion"].get("params") or {})
         self.alpha = cfg["criterion"]["params"]["alpha"]
         self.gamma = cfg["criterion"]["params"]["gamma"]
         self.lr = cfg["optimization"]["lr"]
@@ -326,6 +327,8 @@ class Experiment:
             gamma=self.gamma,
             composition=self.criterion_composition,
             factor=self.factor,
+            soft_classification=self.criterion_params.get("soft_classification", False),
+            soft_classification_floor=self.criterion_params.get("soft_classification_floor", 0.0),
         )
 
     def get_scheduler(self, name, optimizer):

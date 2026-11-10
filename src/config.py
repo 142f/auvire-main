@@ -33,7 +33,15 @@ DEFAULT_LAVDF = {
         "conv": {"use_ln": True, "use_rl": True, "use_do": False},
         "dropout": {"main": 0.1, "head": 0.5},
     },
-    "criterion": {"composition": ["focal", "diou", "rec"], "params": {"alpha": 0.98, "gamma": 2}},
+    "criterion": {
+        "composition": ["focal", "diou", "rec"],
+        # S1 (main contribution): label a fake frame with the IoU its own regressed
+        # interval reaches, so the score orders by localization quality from the
+        # first epoch on. AUVIRE_SOFT_CLS=0 restores the published hard-target
+        # baseline. 0 new parameters, no architectural change.
+        "params": {"alpha": 0.98, "gamma": 2,
+                   "soft_classification": True, "soft_classification_floor": 0.0},
+    },
     "optimization": {
         "lr": 0.001,
         "scheduler": {"name": "reduceonplateau", "params": {"patience": 7, "factor": 0.1, "min_lr": 0}},
@@ -63,7 +71,11 @@ DEFAULT_AVDEEPFAKE1M = {
         "conv": {"use_ln": True, "use_rl": True, "use_do": False},
         "dropout": {"main": 0.1, "head": 0.5},
     },
-    "criterion": {"composition": ["focal", "diou", "rec"], "params": {"alpha": 0.98, "gamma": 2}},
+    "criterion": {
+        "composition": ["focal", "diou", "rec"],
+        "params": {"alpha": 0.98, "gamma": 2,
+                   "soft_classification": True, "soft_classification_floor": 0.0},
+    },
     "optimization": {
         "lr": 0.001,
         "scheduler": {"name": "reduceonplateau", "params": {"patience": 7, "factor": 0.1, "min_lr": 0}},

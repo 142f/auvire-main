@@ -14,7 +14,7 @@ from src.models import Model
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Boundary diagnostic (read-only)")
+    parser = argparse.ArgumentParser(description="Single-checkpoint evaluation (read-only)")
     parser.add_argument("--json", required=True, help="results json providing config")
     parser.add_argument("--ckpt", required=True, help=".pth to evaluate")
     parser.add_argument("--split", default="test")
@@ -77,9 +77,13 @@ def main():
         phase=f"Diag {args.split}",
         show_progress=True,
     )
-    os.environ["AUVIRE_BOUNDARY_DIAG"] = args.out
     evaluation.compute_metrics()
     print(json.dumps({k: v for k, v in evaluation.metrics.items()}, ensure_ascii=False))
+    # Write the metrics so a sweep can be parsed without scraping the log.
+    payload = {"metrics": evaluation.metrics, "limit": args.limit,
+               "ckpt": os.path.abspath(args.ckpt)}
+    with open(args.out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
